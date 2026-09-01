@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>关于 Firefox 隐私加固附录：关于时间戳与元数据的一点思考</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>关于 Firefox 隐私加固附录：关于时间戳与元数据的一点思考</h1>
+<div class="meta">发布于 2026-07-29</div>
+<div class="meta-precise">最初发布：2026-07-29 11:12:00 (UTC) · 最后修改：2026-08-27 05:14:30 (UTC) · 全文502字 · 预计阅读2分钟</div>
+<div class="tags"><a href="/index.html?tag=Arkenfox">#Arkenfox</a><a href="/index.html?tag=Betterfox">#Betterfox</a><a href="/index.html?tag=Firefox">#Firefox</a><a href="/index.html?tag=Firefox Hardening">#Firefox Hardening</a><a href="/index.html?tag=Firefox隐私加固">#Firefox隐私加固</a></div>
+<div class="content"><p>&nbsp; 大多数发布平台会在后台记录你操作时的时间戳，这个时间戳往往带着时区信息。时区本身是一条弱但真实的信息——它能把"你在哪个大致区域"的范围收窄不少，长期积累下来，配合发布/更新的时间分布，甚至能大致推出一个人的作息规律。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp;</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 一个简单的思路是：让浏览器上报的时区和你实际所在时区不一致（比如用 Firefox 的抗指纹追踪功能把时区伪装成 UTC ），这样平台记录下来的时间戳本身就是"错位"的——你按自己真实作息发布内容，但后台留下的标签却对不上号。单独看这些时间戳，得不出你的真实时区或作息规律。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>&nbsp;</b></p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>&nbsp; 这【不是】万能的</b>。它只能挡住"单纯靠时间戳反推"这一种手段。如果攻击者手里还有别的信息源——比如你在别处的活跃时间、跟你相关的其他账号习惯——多个信号交叉验证之后，单条时间戳的模糊效果会被稀释。这层保护更像是增加一点推断成本，而不是彻底遮蔽。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp;</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 另外提一句：这类技巧一旦公开说明"某个具体地方正在这么用"，保护效果就会打折扣——它依赖的是攻击者没意识到时间戳被动过手脚。所以这里只讲原理，不对应到任何具体场所。</p></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/07/thoughts-on-timestamp-and-meta-data.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 106 次 · 离线下载 4 次 · 已有 36 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/8035518662138137128', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

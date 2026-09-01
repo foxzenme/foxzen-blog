@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第四篇： Firefox 版本、 LibreWolf 、 Tor Browser 等不同分支/衍生版（ Fork ）的联系与区别；与 Brave 对比</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第四篇： Firefox 版本、 LibreWolf 、 Tor Browser 等不同分支/衍生版（ Fork ）的联系与区别；与 Brave 对比</h1>
+<div class="meta">发布于 2026-08-02</div>
+<div class="meta-precise">最初发布：2026-08-01 18:45:00 (UTC) · 最后修改：2026-08-29 02:59:58 (UTC) · 全文15715字 · 预计阅读52分钟</div>
+<div class="tags"><a href="/index.html?tag=Arkenfox">#Arkenfox</a><a href="/index.html?tag=Betterfox">#Betterfox</a><a href="/index.html?tag=Firefox">#Firefox</a><a href="/index.html?tag=Firefox Hardening">#Firefox Hardening</a><a href="/index.html?tag=Firefox隐私加固">#Firefox隐私加固</a></div>
+<div class="content"><p>&nbsp;好，<a href="https://digatlas.blogspot.com/2026/07/comparing-with-chrome-and-chromium.html" rel="nofollow" target="_blank">上篇</a>我们浅略对比了 Firefox / Chromium 系列浏览器。如有不足，敬请批评指正。现在我们介绍下 Firefox 版本和分支版、与 Brave 浏览器做对比。</p><p>&nbsp;</p><p>&nbsp;</p><h1 style="text-align: left;">（一）介绍 Firefox 2个大分类</h1><p>&nbsp; <a href="http://firefox.com" rel="nofollow" target="_blank">打开 Firefox 官网</a>， 下载的时候你可能会发现有常规版（ Normal Release ）和长期支持版（ ESR ，Extended Support Release ）分类。其中，常规版是目前每4星期更新一次（之前是6星期），发布大约3个月后即是旧版本，【停止维护】；而 ESR 为维护更新一年（截至本文撰写时间 2026-07 为此周期）。即：普通 Firefox 不提供像 ESR 那样的长期版本维护；用户通常需要持续升级到较新的稳定版本，以获得最新的安全修复和功能更新；ESR 每年发布一个新的主要版本，并在其生命周期内持续获得安全更新和稳定性修复。</p><p>&nbsp;</p><p>&nbsp; 我们来看一个软件工程定律，对于任何软件，要增加新功能，就要增加软件源代码（ Source Code ），也就增加了攻击面（ Attack Surface ），也就【有可能】引入、出现新的安全漏洞。由于常规的维护周期比较短（3个月左右），过了这个时间段之后就变成【旧版本】，即使发现漏洞也不会再修复了。你必须相应升级到最新版。相比之下， ESR 的好处就很明显。 ESR 维护的时间长达一年左右，而且 ESR 是【几乎只修复漏洞，几乎不增加新功能】，即 ESR 以安全更新、漏洞修复和稳定性维护为主，一般不会引入影响兼容性的重大新特性，但仍可能包含少量必要功能调整和平台适配。所以在 ESR 的维护周期内，它的代码质量会【越来越好】。通常情况下，随着漏洞不断修复，稳定性会逐步提高；但新的安全漏洞仍可能被研究人员发现，因此不能理解为"漏洞最终会趋近于零"。而且只有当下一个 ESR 版本出现之后，才会结束对上一个 ESR 版本的维护。</p><p>&nbsp;2026-8-29更新：<strong data-end="1079" data-start="1053"><a href="https://blog.mozilla.org/sumo/2026/08/19/firefox-new-release-cadence-and-what-to-expect/" target="_blank">Firefox 的版本更新周期即将发生变化。</a></strong></p>
+<p data-end="1169" data-start="1084">&nbsp; 过去，Firefox 的普通稳定版（Rapid Release）通常每 4 周发布一个新的主要版本。例如 Firefox 154 于 2026 年 8 月 18 日发布。</p>
+<p data-end="1312" data-start="1174">&nbsp; 从 Firefox 155 开始，Mozilla 将把普通 Firefox 的主要版本发布周期从 <strong data-end="1237" data-start="1223">4 周缩短至 2 周</strong>。Firefox 155 将于 <strong data-end="1272" data-start="1254">2026 年 9 月 1 日</strong>正式发布，此后 Firefox 156、157 等版本也将按照新的两周节奏推进。</p>
+<p data-end="1445" data-start="1317">&nbsp; Mozilla 表示，这一变化的目的并不是让 Firefox 突然拥有两倍的新功能，而是让已经准备好的功能、Bug 修复和其他更新能够更快到达用户手中，同时使整个发布流程更加可预测。<span class="contents" data-content-reference-end="1381" data-content-reference-start="1349"><span class="" data-state="closed"></span></span></p>
+<p data-end="1615" data-start="1450"><strong data-end="1520" data-start="1450">&nbsp; 需要注意的是，我钟爱的 Firefox ESR（Extended Support Release，长期支持版）并不会因此变成两周一个主要版本。</strong> ESR 仍然保持独立的长期支持周期，因此如果你和我一样更看重版本稳定性和较少的重大版本变动，ESR 仍然是值得考虑的选择。</p><p>&nbsp;</p><p>&nbsp;&nbsp; 正常来说，对于正规的软件开发流程，在【正式发布】之后，就只是修复漏洞，而不会再加新功能（要加也是加到下一个大版本）。在这种情况下，漏洞通常是一个【递减】的过程（极少数情况会出现递增，这不在本文讨论之列。对 Mozilla 应该不至于如此）。而且这个“递减过程”并不是【匀速】的，而是一个【先快后慢】的过程（如果画一条“漏洞数变化曲线”，其形状有点类似于倒数函数那样）。<br />
+　　</p><p>&nbsp; 为什么漏洞的递减过程是【先快后慢】？道理很简单——软件在刚刚发布时，会被大量使用（“实际用户数”远远多于软件公司的“测试人员数”）。所以，在刚发布的初始阶段，会有比较多的漏洞暴露出来。但是随着时间的推移，容易发现的漏洞都已经被发现了，剩下的都是比较隐蔽的漏洞（比较难发现）。所以漏洞递减的趋势会变慢。&nbsp;就像好摘的、低垂的果实被摘取，在高处、难以获得的果实被留下。</p><p>&nbsp;</p><p>&nbsp; 那 ESR 版本怎么选出来的？</p><p>&nbsp;</p><p>&nbsp; 在上个 ESR 版本生命周期到期后， Mozilla 挑选出软件开发、测试等环节中表现较好、漏洞较少的一个常规版，作为下一个 ESR 版本。也就是说，其实 ESR 会和常规版一样，该版本生命周期最开始的版本号2者一致的。只是 ESR 大版本号生命周期阶段肯定落后，下个大版本号跳跃明显，新功能迟于常规版。</p><p>&nbsp;</p><p>&nbsp; 所以，我肯定也不推荐大家用测试版（ Beta ）和每夜构建版（ Nightly ）等，因为代码更新和发布太快，漏洞太多，更新过于频繁；不安全。&nbsp;</p><p>&nbsp;</p><p>&nbsp; 那如何升级、切换 Firefox 版本呢？</p><p>&nbsp;</p><p>&nbsp; 【最重要】的基本规则，对任何软件都是，上至操作系统均是如此：<b>软件刚发布的时候，先不要急着用，稍等片刻再说。</b>那“片刻”为多久？不同性质、用途软件当然不一样，越重要和底层的（例如操作系统）当然等的越久；鄙人粗陋的观点认为是、我也这么做的， ESR 大版本为【至少】1个月。可以阅读 <a href="https://www.firefox.com/en-US/releases/" rel="nofollow" target="_blank">Firefox Release Note</a> 、Reddit 、Hacker News 等社区知道修复什么漏洞，观察修复漏洞数量趋势，决定何时升级。例如：现在我【目前】是 140 ESR ，当该版本刚发布时，先别用。等到常规版到 142（甚至 143）发布的时候，你再开始用 140 ESR。<br />
+<br />
+</p><p>&nbsp;</p><p>&nbsp; 当然你可能要问了，如果突然碰到非常严重的漏洞怎么办？规矩是死的，人是活的，&nbsp;如果前一个 ESR 结束维护之后，又发现了一个新的高危漏洞（该漏洞对你有显著影响，并且无法通过我们后面篇章要讲解的“配置项”进行规避）。在这种情况下，前一个 ESR（由于维护已结束）不会再修复了，那么你当然就应该立即升级到下一个 ESR。同样如果是小版本致命漏洞，你也应该尽快升级到最新版，越快越好。</p><p>&nbsp;</p><p>&nbsp; 注： Mozilla 的电子邮件客户端 Thunderbird 也是分为常规版与 ESR 版，我当然也是 ESR 啦。</p><p>&nbsp;</p><p>&nbsp;</p><h1 style="text-align: left;">（二） Firefox 主要分支版浅议</h1><div style="text-align: left;">&nbsp; 上面介绍了版本分类，接下来介绍常见分支版和对比、建议。但【根本原则】还烦请大家注意：“没有绝对的好与坏，一切都是权衡的艺术，在权衡方方面面。工具定位不同，不存在绝对优劣。威胁建模才是挑选工具等的一切原则。如果你想获得最适合、最大化防御，不仅要在软件上努力。”</div><div style="text-align: left;">&nbsp;</div><div style="text-align: left;">&nbsp;&nbsp;</div><div style="text-align: left;">&nbsp;&nbsp;&nbsp; 但是，必须说明，我们要知道，分支版一般来说，维护力度和修复漏洞速度、支持财力不如 Mozilla 官方。也就是说肯定修复漏洞等不如官方响应迅捷。所以我还是最推荐官方原版。&nbsp;</div><div style="text-align: left;">&nbsp;</div><div style="text-align: left;">&nbsp;</div><div style="text-align: left;">&nbsp; 比较著名的分支版有 LibreWolf 、 Waterfox 、大名鼎鼎匿名暗网洋葱路由浏览器（ Tor Browser,&nbsp; The Onion Router Browser ）。再次强调，<b data-end="331" data-start="305">它们并不是谁比谁高级，而是面向不同使用场景。</b>如果说官方 Firefox 【默认配置版】追求的是<b data-end="366" data-start="351">兼顾功能、兼容性与隐私</b>；那么这些分支，则分别向不同方向进行了取舍。</div><div style="text-align: left;">&nbsp;</div><div style="text-align: left;">&nbsp;</div><div style="text-align: left;">（1）<b>&nbsp;LibreWolf ——默认配置最激进的隐私版 Firefox</b></div><div style="text-align: left;">&nbsp;&nbsp;</div><div style="text-align: left;">&nbsp; 如果让我用一句话评价 LibreWolf ：<b data-end="508" data-start="459">它就是别人帮你提前完成了一大部分 Firefox 隐私加固（ Hardening ）的浏览器。</b>LibreWolf 基于最新版 Firefox 开发，但默认进行了大量隐私配置，例如：（1）禁用 Telemetry（遥测）</div><div style="text-align: left;">（2）删除 Pocket、Mozilla 推广等组件</div><div style="text-align: left;">（3）默认启用严格追踪保护</div><div style="text-align: left;">（4）默认开启 Resist Fingerprinting（RFP，抗浏览器指纹跟踪。但我<a href="https://digatlas.blogspot.com/2026/07/philosophy-and-threat-model.html" rel="nofollow" target="_blank">第二篇</a>说了开启不一定都是好的）</div><div style="text-align: left;">（5）默认 HTTPS Only 模式开启，即你访问的网页全部加密传输</div><div style="text-align: left;">（6）默认安装 uBlock Origin 去广告和隐私扩展</div><div style="text-align: left;">（7）删除大量会主动连接 Mozilla 或第三方服务器的功能&nbsp;</div><div style="text-align: left;"><p data-end="799" data-start="728">&nbsp;</p><p data-end="799" data-start="728">&nbsp;因此，安装完成以后，隐私保护水平通常高于默认安装的 Firefox。<span data-state="closed"></span></p>
+<p data-end="805" data-start="801">&nbsp;</p><p data-end="805" data-start="801">&nbsp; 但是天下没有免费的午餐。由于它默认开启了大量隐私配置，因此：（1）部分网站可能无法正常工作</p><p data-end="805" data-start="801">（2）某些网页会误判浏览器（ RFP 通病，同样 RFP 开启后也会有其他问题，第二篇有说，后面篇章也会阐述）</p><p data-end="805" data-start="801">（3）登录状态、Cookie 等默认策略更加严格</p><p data-end="805" data-start="801">（4）与普通 Firefox 相比，兼容性略差</p>
+<p data-end="927" data-start="919">&nbsp;&nbsp;</p><p data-end="927" data-start="919">&nbsp; 因此，它更适合：已经理解 Firefox 配置项、希望开箱即用获得较高隐私保护的用户。而对于完全不了解 Firefox 的新人，我反而建议先学习官方 Firefox，再决定是否迁移（虽然我的修改程度也不次于 LibreWolf 了哈哈）。</p><p data-end="927" data-start="919">&nbsp;</p><p data-end="927" data-start="919">&nbsp;（2）<b>&nbsp;&nbsp;Waterfox——更强调兼容性与可定制性的 Firefox</b></p><p data-end="927" data-start="919"><b>&nbsp; &nbsp;</b>Waterfox 早期最大的特色，就是继续支持量子 Firefox Firefox Quantum（57）以前的大量经典扩展（ Legacy/XUL ），因此曾吸引不少不愿升级到量子 Firefox Quantum 的老用户。<br /><br />&nbsp; 不过随着 Waterfox 自身逐渐跟进新版 Firefox ESR，其现代版本已经不再完整兼容所有 Quantum 之前的扩展，而是主要采用 Firefox 的 WebExtensions 扩展体系。近年来，Waterfox 又重新加入了部分 Legacy 扩展支持，但目前属于有限兼容，并不能简单理解为"恢复 Firefox 56 的全部扩展生态"。</p><p data-end="927" data-start="919">&nbsp; &nbsp;Waterfox 的定位，与 LibreWolf 恰好有所不同。如果说 LibreWolf 的关键词是：<b data-end="1143" data-start="1120">Privacy First（隐私优先）；</b>那么 Waterfox 更像是：<b data-end="1195" data-start="1165">高级用户（&nbsp;</b><b data-end="1195" data-start="1165">Power User&nbsp;</b><b data-end="1195" data-start="1165">）版 Firefox。</b></p><blockquote data-end="1195" data-start="1163">
+</blockquote>
+<p data-end="1295" data-start="1197">&nbsp; Waterfox 同样基于 Firefox（近年来主要跟随 Firefox ESR），但相比 LibreWolf，它保留了更多原版 Firefox 的行为，同时增加了许多方便高级用户的功能，例如：</p><p data-end="1295" data-start="1197">（1）更多界面定制</p><p data-end="1295" data-start="1197">（2）更丰富的标签页功能</p><p data-end="1295" data-start="1197">（3）内置广告拦截&nbsp;</p><p data-end="1295" data-start="1197">（4）更强调可配置性</p><p data-end="1295" data-start="1197">（5）保持较好的网站兼容性
+</p>
+<p data-end="1414" data-start="1351">&nbsp; 同时，它也去除了 Mozilla 的遥测和实验功能。<span data-state="closed"></span></p>
+<p data-end="1419" data-start="1416">&nbsp; 因此，如果你希望：</p><p data-end="1419" data-start="1416">（1）隐私比 Firefox 更好</p><p data-end="1419" data-start="1416">（2）又不希望网站大量失效</p>
+<p data-end="1498" data-start="1462">&nbsp; 那么 Waterfox 会比 LibreWolf 更容易作为日常浏览器。当然，相对应地，它默认隐私保护力度也没有 LibreWolf 那么激进。</p><p data-end="1498" data-start="1462">&nbsp;</p><div class="PDq2pG_selectionAnchorContainer" data-end="143" data-section-id="6tq6vq" data-start="106" style="text-align: left;">&nbsp; <span style="font-weight: normal;">（3）</span> <b>Pale Moon ——坚持传统 Firefox 路线的浏览器</b><span aria-hidden="true" class="PDq2pG_selectionAnchor"></span></div>
+<p data-end="211" data-start="145">&nbsp; 除了 LibreWolf、Waterfox 之外，还有一个经常被老 Firefox 用户提起的浏览器——<b data-end="210" data-start="197">Pale Moon</b>。</p>
+<p data-end="288" data-start="213">&nbsp; 如果说 Waterfox 的目标，是在尽可能跟进现代 Firefox 的同时保留部分传统特性；那么 Pale Moon 则走了一条几乎完全不同的道路。</p>
+<p data-end="425" data-start="290">&nbsp; 它早已不再跟随 Firefox 的最新代码，而是维护自己的浏览器引擎（<b data-end="335" data-start="325">Goanna</b>，源自 Gecko 的早期分支），坚持延续 Firefox Quantum（57）发布之前的传统设计理念（当然如前文赘述，安全性、漏洞修补方面远不如其他分支，不是很推荐）。<span data-state="closed"></span></p>
+<p data-end="586" data-start="427">&nbsp; Pale Moon 最大的特点，就是<b data-end="477" data-start="445">保留了传统 Firefox（ XUL/XPCOM ）扩展生态</b>。在 Mozilla 于 Firefox 57 全面转向 WebExtensions 后，大量经典扩展无法继续使用，而 Pale Moon 仍然可以运行其中相当一部分经过适配的传统扩展，因此至今仍受到【少数老用户】的欢迎。</p>
+<p data-end="597" data-start="588">&nbsp; 例如，曾经著名的：Classic Theme Restorer、&nbsp;Tab Mix Plus 、&nbsp;ScrapBook 、DownThemAll（经典版）等传统扩展，其设计理念都属于那个时代。</p>
+<p data-end="710" data-start="692">&nbsp; 不过，这条路线也意味着需要付出代价。</p>
+<p data-end="751" data-start="712">&nbsp; 由于 Pale Moon 没有直接跟随 Firefox 的现代开发路线，因此：</p><p data-end="751" data-start="712">（1）对现代 Web 标准的支持相对落后</p><p data-end="751" data-start="712">（2）一些新网站可能出现兼容性问题</p><p data-end="751" data-start="712">（3）可使用的扩展数量远少于 Firefox</p><p data-end="751" data-start="712">（4）社区规模和开发资源也明显小于 Firefox 、LibreWolf 和 Waterfox</p>
+<p data-end="923" data-start="863">&nbsp; 因此，它更适合<b data-end="892" data-start="870">仍然依赖传统 Firefox 工作流</b>、需要某些经典扩展的用户，而并不推荐作为普通用户的日常浏览器。</p>
+<hr data-end="928" data-start="925" />
+<h3 data-end="963" data-section-id="kvsszm" data-start="930">补充说明：Waterfox 与 Pale Moon 的区别</h3>
+<p data-end="1020" data-start="965">&nbsp; 很多文章都会把 Waterfox 和 Pale Moon 放在一起介绍，但两者实际上代表了两种不同的发展思路。</p>
+<p data-end="1208" data-start="1022">&nbsp; Waterfox 目前仍然主要基于现代 Firefox ESR 开发，日常扩展生态仍以 <b data-end="1083" data-start="1066">WebExtensions</b> 为主，仅逐步恢复了部分传统（Legacy）扩展支持，例如近期加入了对部分 <b data-end="1154" data-start="1121">restartless legacy extensions</b>（无需重启的旧式扩展）的初步兼容。<span data-state="closed"></span></p>
+<p data-end="1288" data-start="1210">&nbsp; 而 Pale Moon 则更倾向于延续 Firefox Quantum 之前的浏览器设计理念，重点维护传统扩展生态，而不是追随 Firefox 的最新特性。</p>
+<p data-end="1383" data-is-last-node="" data-is-only-node="" data-start="1290">&nbsp; 因此，如果只是为了日常浏览网页，我更建议选择 <b data-end="1349" data-start="1313">Firefox ESR、LibreWolf 或 Waterfox</b>；只有确实依赖传统 XUL 扩展时，才值得考虑 Pale Moon。</p><p data-end="1383" data-is-last-node="" data-is-only-node="" data-start="1290">&nbsp;</p><p data-end="1383" data-is-last-node="" data-is-only-node="" data-start="1290">（4）<b><span style="background-color: red;">重头戏</span>：Tor 浏览器（ The Onion Router ，洋葱路由）——不仅是 Firefox 增强分支版，而是匿名通信工具</b></p>
+<p data-end="1594" data-start="1588">&nbsp; 很多人认为：Tor 浏览器 = Firefox + 更强隐私。其实这是一个很大的误解。Tor 的真正目标【不是】<b data-end="1684" data-start="1667">提高隐私（Privacy）</b><span data-end="1684" data-start="1667">；</span>【而是<b>】</b><b data-end="1714" data-start="1693">提高匿名性（Anonymity）。</b>这是两个完全不同的概念。</p>
+<p data-end="1799" data-start="1730">&nbsp; Tor 浏览器基于 Firefox ESR ，但进行了大量修改，并且所有网络流量都会默认经过 Tor 网络（洋葱路由）中的3个代理节点，即3次跳转后连接到你想去的目标网站。这就像一层层洋葱保护着你的原始IP；若谁要剥开就被洋葱的辛辣刺激到，无法探测你的原始 IP 。这样可以：隐藏真实 IP；提高匿名性；降低网站跨站追踪能力；抵抗大部分网络审查（但不是全部，后面会说）。
+</p>
+<p data-end="1949" data-start="1848">&nbsp; 同时，它还进行了大量抗浏览器指纹（第一篇有所提及，指根据你的设备硬件等计算出特征，即微小差异，得出一个相对不变的数值等）修改，使所有 Tor 浏览器用户尽可能表现得相似，从而降低因浏览器特征而被识别的风险。但是：Tor 并不是普通浏览器。由于所有流量都经过3次跳转的 Tor 网络，因此常被用来作为骇客入侵等恶意行为。因此：浏览速度明显更慢；很多网站要求验证码；银行、支付网站可能限制访问；视频播放体验较差。因此，它更适合：新闻调查；匿名访问；特殊网络环境；对匿名性要求极高的场景。
+</p>
+<p data-end="2151" data-start="2108"><b data-end="2151" data-start="2108">&nbsp; 并【不】建议把 Tor Browser 当成每天刷网页、看视频、办公的主力浏览器。</b></p>
+<p data-end="2164" data-start="2153">&nbsp; 另外需要特别说明一点：<b data-end="2210" data-start="2166">Tor Browser 的匿名性建立在"所有人都使用同一种浏览器"这一思想之上。</b>因此官方明确不建议使用其它浏览器（包括 LibreWolf）直接连接 Tor 网络，因为这样反而会增加浏览器指纹的独特性，降低匿名效果。</p><p data-end="2164" data-start="2153"></p><p data-end="2164" data-start="2153"></p><p data-end="2164" data-start="2153"></p><p data-end="2164" data-start="2153"><span data-state="closed"></span></p>
+<p data-end="1383" data-is-last-node="" data-is-only-node="" data-start="1290">&nbsp;接下来我们简要介绍下 Tor 吧！希望我这里是相对完整的 Tor 中文介绍。</p><p data-end="1383" data-is-last-node="" data-is-only-node="" data-start="1290">&nbsp;Tor 起源于美国海军研究实验室（ U.S. Naval Research Laboratory，NRL ）提出的 Onion Routing（洋葱路由）研究，而【不是】一开始就是 Tor 浏览器。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">时间线可以大致记成四步：</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">（1）<span data-end="201" data-start="191">1995 年</span>：美国海军研究实验室（NRL）的 Paul Syverson、Michael Reed、David Goldschlag 提出 <span data-end="282" data-start="265">Onion Routing</span>（洋葱路由）概念，目标是保护网络通信的来源和目的地不被流量分析识别。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177"><span data-end="366" data-start="356">（2）2002 年</span>：Roger Dingledine、Nick Mathewson 等人在前述研究基础上开发出第二代实现，并命名为 <span data-end="449" data-start="423">Tor（The Onion Routing）</span>，同时开源。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177"><span data-end="505" data-start="495">（3）2006 年</span>：成立【独立非营利】组织 <b data-end="535" data-start="516">The Tor Project</b>，负责后续开发和维护。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177"><span data-end="596" data-start="586">（4）2008 年</span>：发布 <b data-end="622" data-start="600">Tor Browser Bundle</b>，普通用户终于不用自己配置 Firefox + Tor 代理了。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp; 我们仔细想想：其实美国海军当初研究匿名通信和开源，并不是仅仅为了让别人匿名，更多而是为了<b data-end="764" data-start="753">让自己的人匿名</b>。例如：驻外情报人员访问总部、军事人员在公开互联网通信、政府机构隐藏通信关系等。</p>
+<p data-end="857" data-start="817">&nbsp; 如果整个匿名网络里只有美国政府在用，那么任何人一看到某条 Tor 流量，就知道：<b data-end="876" data-start="861">"这是美国政府的人。"</b>，无需破解加密，匿名就失效了。所以从洋葱路由 Onion Routing 设计之初，研究人员就认为：<b data-end="972" data-start="922">匿名网络必须是开放的（Open）、开源的（Open Source）、由大量普通用户共同使用。</b>只有记者、程序员、普通网民、企业、政府、研究机构都混在一起，匿名集合（Anonymity Set）才足够大，美国政府自己的通信反而更难被识别。Tor 官方至今仍把这一理念写在<a href="https://tor.eff.org/zh-CN/about/history/" rel="nofollow" target="_blank">项目历史中</a>。<span data-state="closed"></span></p>
+<p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106">&nbsp; 所以，很多人觉得"美国海军开发了 Tor"很矛盾，其实从匿名通信的原理来看，这反而是一个很自然的设计思路：<b data-end="1182" data-is-last-node="" data-start="1159">匿名需要人群，而不是只有少数人在使用。</b></p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><b data-end="1182" data-is-last-node="" data-start="1159">&nbsp;</b><span data-end="1182" data-is-last-node="" data-start="1159"> 补充，你可能产生疑问： Tor 项目诞生（2002）很早，早于 Firefox （2004年从网景浏览器 Netscape 中浴火重生），那在此之前</span>那之前 Tor 基于什么<span data-end="1182" data-is-last-node="" data-start="1159">？是这样的：</span><span data-end="44" data-start="29">Tor（洋葱路由项目）</span>：2002 年诞生；<span data-end="72" data-start="57">Firefox 浏览器</span>：2004 年发布（最初叫 Firefox 1.0）；<span data-end="126" data-start="102">Tor Browser（Tor 浏览器）</span>：直到 <span data-end="140" data-start="130">2008 年</span>才出现。也就是说：<b data-end="238" data-start="192">Tor 比 Firefox 早，但 Tor Browser 比 Firefox 晚。</b></p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><b data-end="238" data-start="192">&nbsp;</b><span data-end="238" data-start="192"> 那</span>在 Tor Browser 出现之前，大家怎么用 Tor？<span aria-hidden="true" class="PDq2pG_selectionAnchor"></span></p>
+<p data-end="316" data-start="279">&nbsp; 最早几年（2002–2007），<span data-end="315" data-start="295">根本没有 Tor Browser</span>。当时 Tor 只是一个后台代理程序（Tor daemon）。用户需要：</p>
+<ol data-end="525" data-start="357" style="text-align: left;"><li data-end="367" data-section-id="1ig7tgv" data-start="357">
+启动 Tor；
+</li><li data-end="397" data-section-id="12y66j6" data-start="368">
+再启动自己喜欢的浏览器（通常就是 Firefox）；
+</li><li data-end="441" data-section-id="x5370z" data-start="398">
+手动把浏览器 SOCKS Proxy 设置成 <code data-end="440" data-start="424">127.0.0.1:9050</code>；（带有用户图形界面的 Tor 浏览器端口号为9150）</li><li data-end="525" data-section-id="efqs5k" data-start="442">
+安装 <span data-end="461" data-start="448">Torbutton</span> 扩展，避免 DNS 泄漏、Cookie 等隐私问题.</li></ol><p>简单示例图：</p><p>Firefox<br />&nbsp; &nbsp;│<br />Torbutton 扩展<br />&nbsp; &nbsp;│<br />SOCKS Proxy<br />&nbsp; &nbsp;│<br />Tor<br />&nbsp; &nbsp;│<br />Internet&nbsp;</p><p>&nbsp;&nbsp;为什么后来要做 Tor Browser？<span aria-hidden="true" class="PDq2pG_selectionAnchor"></span></p>
+<p data-end="661" data-start="644">Tor 官方后来发现一个严重问题：<b data-end="689" data-start="663">普通 Firefox + Tor 并【不】安全。</b></p>
+<p data-end="699" data-start="691">原因很多，例如：（1）用户容易把代理配置错</p><p data-end="699" data-start="691">（2）容易忘记开启 Tor</p><p data-end="699" data-start="691">（3）浏览器指纹各不相同</p><p data-end="699" data-start="691">（4）插件、JavaScript、字体等都会泄露身份</p><p data-end="699" data-start="691">（5）每个人 Firefox 配置都不同，匿名集合（Anonymity Set）很小。（怎么又回到这个问题了哈哈哈哈）<span data-state="closed"></span>
+</p>
+<p data-end="872" data-start="850">因此 Tor Project 得出的结论是：<b data-end="919" data-start="876">不能只提供 Tor 网络，还必须提供一个已经加固（Hardened）的浏览器，</b></p><hr data-end="924" data-start="921" />
+<div data-end="960" data-section-id="1mzfcc" data-start="926" style="text-align: left;"><span style="font-weight: normal;">&nbsp; 于是 2008 年诞生了 Tor Browser Bundle</span></div>
+<p data-end="1004" data-start="962">&nbsp; 2008 年发布了第一个 <b data-end="1003" data-start="975">Tor Browser Bundle ( TBB ，就是我刚刚说的”</b><b>带有用户图形界面的 Tor 浏览器端口号为9150</b><b data-end="1003" data-start="975">“)</b>。</p>
+<p data-end="1016" data-start="1006">&nbsp; 它里面直接打包好了： Firefox Portable 、 Tor 、 Torbutton 、 Vidalia （ Tor 图形管理器）、 Polipo （ HTTP 代理）。用户只需要解压运行即可，不再需要自己配置 Firefox。<span data-state="closed"></span></p>
+<p data-end="1244" data-start="1163">&nbsp; 后来 Vidalia、Polipo 等组件逐渐被移除，Tor Browser 也从"Firefox + 插件"演变为今天<b data-end="1243" data-start="1223">直接维护的 Firefox 分支</b>。</p>
+<hr data-end="1249" data-start="1246" />
+<div data-end="1270" data-section-id="uwhmj9" data-start="1251" style="text-align: left;"><span style="font-weight: normal;">&nbsp; 为什么一直选择 Firefox？</span>这其实也是一个很有意思的问题。</div>
+<p data-end="1359" data-start="1289">&nbsp; Mozilla 当年愿意与 Tor Project 合作，而且 <b data-end="1341" data-start="1321">Firefox 是开源（ MPL ）</b>，允许 Tor 深度修改浏览器源码。更重要的是，Firefox 的 <b data-end="1389" data-start="1377">Gecko 引擎</b>当时提供了 Chromium 难以实现的一些底层修改能力，例如：浏览器指纹统一（Resist Fingerprinting）、网络栈修改、JavaScript 行为调整、字体枚举限制、Canvas 等 API 的修改、</p>
+<p data-end="1677" data-start="1511">&nbsp; 很多后来 Firefox 自己加入的隐私特性，其实最初都来自 Tor Project 的实践。例如抗指纹追踪&nbsp;<b data-end="1591" data-start="1561">Resist Fingerprinting（RFP）</b> 最初就是 Tor Browser 开发的技术，后来（2016年） Tor 项目反哺，被 Mozilla 合并进入 Firefox。正式名称为 Tor Uplift 项目，后并入 Firefox 主线。 为&nbsp;Mozilla 与 Tor Project 合作迁移的技术。<span data-state="closed"></span></p>
+<p data-end="1685" data-start="1679">&nbsp; 所以可以说：<b data-end="1829" data-start="1689">Tor 并不是一直基于 Firefox；准确地说，是 Tor Browser 从诞生开始（2008 年）就是基于 Firefox，而在此之前只有 Tor 网络，没有专门的 Tor 浏览器，用户通常使用 Firefox 配合 Torbutton 和 Tor 代理访问互联网。</b> </p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><span data-end="238" data-start="192">&nbsp; 感谢 Tor 项目让我们有了成熟的抗指纹追踪技术。</span></p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><span data-end="238" data-start="192">&nbsp;Tor 还有一些特性。其实，刚刚没说清楚， Tor 官方也有警告，Tor 【不是完全匿名】！只能匿名你的原始 IP ，但【完全无法掩盖你正在使用 Tor 】！因为 Tor 流量特征极为明显，从技术上根本无法掩盖，并非官方不愿掩盖。 也无法掩盖你的行为特点、上线时间、语言风格等！</span></p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><span data-end="238" data-start="192">&nbsp;为什么？例如，</span>Tor 目前实际部署的是 <b>circuit-level padding</b>（电路级填充，PADDING cell），从 Tor 0.3.1（2017 年）开始引入，将你的流量包都切割为统一的 512 KB。目的是防御基于包大小/时序的流量分析（traffic analysis / website fingerprinting），即防止深度包分析（ Deep Packet Inspect ， DPI ，不需要解密，也无法解密你的 TLS 加密流量即可推断你在干什么）监视你的流量包大小而推断出你正在干什么。例如视频流量包相对更大和时间长度相对稳定。业内更常用的术语是 <b>traffic padding</b> 或 <b>circuit padding</b><span data-end="238" data-start="192">。也即，只要你发现一个浏览器总是固定大小的 512 字节包，几乎可以 100% 确定是 Tor 浏览器。</span>这可以作为识别 Tor 流量的重要特征之一，但并不能仅凭这一特征就 100% 确定。</p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><span data-end="238" data-start="192">&nbsp; 而且 Tor 浏览器为了保证安全，所使用的 TLS 加密算法（加密你的互联网流量不被直接窥视） 为相对古老的，不追求最新的，还是如前文所说避免过新的软件有致命漏洞。这也是识别方式之一。且 Tor 告诉网站自己的浏览器标识符也非常老旧。</span>Tor Browser 通常会基于一个经过充分验证的 Firefox ESR （就像我们前文所说越新不代表越好），而不会第一时间跟进最新 Firefox。<span data-end="238" data-start="192">截至本文撰写（2026-08）目前应该是 Firefox ESR 68 左右。</span></p><p data-end="1182" data-is-last-node="" data-is-only-node="" data-start="1106"><span data-end="238" data-start="192">&nbsp; 前文所说， ”</span>所有网络流量都会默认经过 Tor 网络（洋葱路由）中的3个代理节点，即3次跳转后连接到你想去的目标网站<span data-end="238" data-start="192">“。这些最后一跳，即出口节点的 IP 地址是在 Tor 官网公开的；即网站也可以以此识别。</span></p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp; &nbsp;RFP 的”大家都一样“是指：通过统一浏览器几乎所有特征，例如标识符 User-Agent 、屏幕尺寸、字体、渲染字体 canvas/显卡型号、特点 webgl 等手段实现的。流量层面的"大家都一样"——这是 padding cell 想做的事（让流量特征更难区分），但目前 Tor 官方自己也承认 padding 覆盖有限，主要针对特定攻击场景，并不能说"已经做到流量不可区分"。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp;幽默地说，如果你使用 Tor，在学校、公司等安全网关、防火墙、深度包检测（Deep Packet Inspection，DPI，可以根据流量特征、数据包大小、时序等信息推断你正在使用什么协议或服务）的系统看来，你可能会成为“最靓的那个人”——因为<strong data-end="1000" data-start="958">你使用的并不是普通的 HTTPS 流量，而是具有明显协议特征的 Tor 流量</strong>。就像黑夜里的火把一样显眼。这也就是我前面阐述的 Tor 无法掩饰你在使用 Tor ，Tor 本身并不能保证你在网络层面隐藏“我正在使用 Tor”这件事。简单来说因为：</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">1、 Tor 本身就是一个相对特殊的匿名网络，流量占比在全球互联网很低，相对甚至很显眼。与普通用户大量使用的 HTTPS、HTTP/3 等流量相比，直接连接 Tor 网络具有更加特殊的网络行为和协议特征。对于部署了 DPI 的网络管理员或审查系统而言，识别 Tor 流量并不是完全不可能的事情。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">2、<a href="https://support.torproject.org/tor-browser/circumvention/unblocking-tor/" target="_blank">Tor 的通信结构本身存在可以用于流量分析的特征。Tor 使用固定大小的512 字节 cell（通信单元）作为协议的基本单位，并通过加密等方法对这些数据进行加密和传输。固定 cell 大小本身曾经被认为是 Tor 流量分析的重要特征之一；研究也表明，即使数据内容被加密，观察者仍可能利用流量的时间、方向和数量等元数据进行流量分析。</a></p>
+<p data-end="1467" data-start="1434">&nbsp; 所以，“加密”并不等于“流量看起来和普通 HTTPS 完全一样”。</p>
+<p data-end="1541" data-start="1472"><strong data-end="1541" data-start="1472">&nbsp; 这也是为什么 Tor Project 提供了 Bridges（网桥）以及 Pluggable Transports（可插拔传输）。</strong></p>
+<p data-end="1704" data-start="1546">&nbsp; 例如，obfs4 会让 Tor 流量看起来像随机数据；Snowflake 会让流量看起来更像视频通话；WebTunnel 则试图让 Tor 连接看起来像普通 HTTPS 流量。它们存在的目的之一，就是降低直接连接 Tor 时暴露出的协议特征。<span class="contents" data-content-reference-end="1672" data-content-reference-start="1639"><span class="" data-state="closed"></span></span></p>
+<p data-end="1804" data-start="1709">&nbsp; 因此，如果你的目标只是<strong data-end="1737" data-start="1720">隐藏“你正在访问什么网站”</strong>，Tor 的确非常强大；但如果你的威胁模型还包括<strong data-end="1783" data-start="1761">隐藏“你正在使用 Tor”这件事本身</strong>，那么“直接连接 Tor”就不是完整答案。</p>
+<p data-end="1814" data-start="1809">&nbsp; 换句话说：</p>
+<p data-end="1865" data-start="1819"><strong data-end="1865" data-start="1819">&nbsp; Tor 很擅长隐藏你去了哪里，但默认情况下并不承诺让观察者不知道你正在使用 Tor。</strong></p>
+<p data-end="1883" data-start="1870">&nbsp; 这两件事情，是完全不同的。</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp;</p><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp;</p><h1 class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177" style="text-align: left;">&nbsp;（三）与 Brave 做对比&nbsp;</h1><p class="PDq2pG_selectionAnchorContainer" data-end="187" data-start="177">&nbsp;隐私浏览器领域最常被拿来比较的两个阵营，就是 Firefox 与 Brave。很多人会争论"到底谁更好"，但这个问题本身就问错了——因为二者追求的目标并不完全相同。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Firefox 更强调：浏览器生态独立（Gecko 引擎）、高度可定制、开源社区、用户自主控制。Brave 更强调：默认隐私（Privacy by Default）、开箱即用、不需要配置即可获得较高隐私保护、Chromium 的网站兼容性。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（1）Brave——默认隐私保护最完善的 Chromium 浏览器</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 如果用一句话形容 Brave：它有点像 Chromium 世界里的 LibreWolf ——只是这个比喻仅帮助理解，两者设计理念并不完全相同：LibreWolf 更强调极致去功能化，而 Brave 还集成了 Brave Search、Brave Rewards、Wallet、VPN 等自有生态功能。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Brave 基于 Chromium ，但删除、修改了大量谷歌的默认行为，例如：默认拦截广告和第三方 Tracker、默认阻止第三方 Cookie、默认 HTTPS 自动升级、默认抗指纹追踪 Fingerprinting Protection、默认过滤 URL 跟踪参数（Query Parameter Filtering ，有些网站分享的链接最后带有参数，可以追踪到哪个账户分享的）、默认反跳转追踪（Bounce Tracking Protection ，可以追踪到你从哪个网页跳转来的）、大量减少浏览器主动连接谷歌服务。因此 Brave 几乎不用装任何扩展，就已经有相当不错的隐私保护。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（2）Brave 最大的优势：网站兼容性</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Brave 基于 Chromium，而目前几乎所有网站（银行、政府、企业系统、在线视频）都会优先适配 Chromium。相比之下，Firefox 偶尔仍会遇到网站布局异常、DRM 播放问题、企业系统仅支持 Chromium 等情况。虽然这种情况已越来越少，但兼容性上 Brave 仍略占优势。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（3）Brave 最大的问题：仍属于 Chromium 生态</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Brave 每隔几周都要同步 Google Chromium 的代码，再删除谷歌的部分功能、加入自己的修改——本质上一直在"跟随 Chromium "。而 Firefox 拥有目前仍具主流竞争力的独立引擎 Gecko。很多人坚持用 Firefox ，不只是因为隐私更好，而是希望网络世界不要只剩 Chromium 一个内核。如果未来所有浏览器都建立在 Chromium 之上，谷歌将事实上拥有 网络标准更大的影响力，浏览器引擎的多样性本身就是开放互联网的重要组成部分。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（4）Brave 会受 Manifest V3 影响吗？</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Manifest V3 主要限制的是浏览器扩展的能力，例如 Chrome 上的 uBlock Origin。但 Brave 自带的 Shields 拦截功能并非扩展，而是浏览器内置功能，因此即使 MV3 限制扩展，Brave 仍能继续实现广告拦截。当然，这不代表 Brave 完全不受 Chromium 演进影响，它仍需持续维护与 Chromium 主线的差异。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（5）两种不同的反指纹哲学：RFP vs Farbling</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Firefox 的 RFP（Resist Fingerprinting）走的是<b>统一化</b>路线：把能读到的值锁定成固定值（如时区统一为 UTC、窗口尺寸通过 letterboxing 取整），让所有开启 RFP 的用户尽量表现一致,靠"很多人共享同一个值"让你消失在人群里。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; Brave 的 Farbling 走的是【随机化】路线：对 Canvas、WebGL、声音识别指纹 AudioContext （让你的设备播放无声的声音，利用设备间微小播放差异来确定你） 等指纹相关读取的接口注入伪随机噪声。关键设计是同一网站在同一会话内多次读取结果保持一致（否则"数值不一致"本身就会暴露异常），但换一个网站或会话，噪声就会变化。关键设计是：<b>同一个网站在同一个会话（session）内多次读取，得到的扰动值是一致的</b>（否则网站会通过"同一页面多次读取值不一致"这个异常本身反过来识别你），但<b>换一个网站、或换一个会话，噪声种子就变了</b>,所以你说的"每次不一样"更准确地说是"<b>跨站点/跨会话不一样，同一会话内保持一致</b>"，不是完全无序的随机。这就是我<a href="https://digatlas.blogspot.com/2026/07/philosophy-and-threat-model.html" rel="nofollow" target="_blank">本系列第二篇</a>说的“让自己每次特征都不一样（这也许不是 Firefox 擅长的，后面篇章会介绍）”。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 两者没有绝对谁更强：RFP 的风险在于如果某个 API 未被覆盖，或用户环境本身有独特配置，"统一化"就会失效,甚至因为数值过于规整反而显得可疑；Farbling 的风险在于噪声注入本身可能被识别出统计特征，或实现有缺陷时反而制造出更独特的指纹。或者会被反欺诈风控认为更加可疑。两条不同技术路线，各有各的攻击面。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 补充：（1）默认拦截策略不同：Brave 内置 Shields，默认拦截广告、跟踪器、部分脚本，不需要像 Firefox 那样额外装 uBlock Origin。这是 Brave 的核心卖点——"开箱即用的拦截"，而不是"开箱即用的隐私加固"，这两者【不完全】等价。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">（2）Brave 内置 Brave Rewards / BAT（加密货币代币），机制是用户可选择观看 Brave 自家的隐私保护广告来赚取 BAT。这是<b>默认关闭、需要手动开启</b>的功能，但作为"隐私加固"博客，这里有个值得提醒大家的点：内置加密货币钱包和自有广告网络，本身增加了攻击面和账户体系复杂度，即使默认关闭，这类内建功能是否符合你"最小化攻击面"的加固理念，值得大家自己权衡。&nbsp;</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">（3）<b>Tor 集成功能需要讲清楚局限</b>：Brave 有"Private Window with Tor"（Tor 私密窗口），可以让部分标签页流量走 Tor 网络。<b>但这不等于 Tor&nbsp;浏览器</b>——它只是让 Brave 的网络请求通过 Tor 网络进行代理，并没有实现 Tor Browser 大部分针对匿名性的浏览器级防护（例如统一浏览器指纹等），没有 Tor Browser 那套完整的指纹统一化改造（UA、字体、屏幕尺寸等仍是 Brave/Chromium 特征），匿名集合完全不同，安全性远不如原生 Tor 浏览器。这点必须写清楚，避免读者误以为"用 Brave 的 Tor 窗口 = 用 Tor Browser"。&nbsp;说实话，这种流量哪怕走 Tor 网络，真的很显眼，因为和其他 Tor 用户实在不一样。如果你非常匿名性，应直接使用 Tor 浏览器。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp;</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>（6）Firefox 与 Brave，究竟怎么选？</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 如果完全不愿折腾配置，Brave 安装后基本不用调整，隐私保护已经不错。如果希望自己完全掌控浏览器——深度修改配置、使用 user.js、about:config 等，并且支持引擎多样性——Firefox（尤其 ESR）仍是更好的选择。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 需要澄清一点：不要把 Brave 描述成"隐私一定强于 Firefox"。更准确的说法是——<b>默认配置下</b>，Brave 的隐私保护通常更激进、更完整；<b>经过合理加固</b>（user.js、uBlock Origin 等）的 Firefox，可以达到与 Brave 接近甚至某些方面更高的隐私水平，只是需要用户投入更多配置工作,这也是目前隐私社区比较普遍的共识。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 浏览器从来没有"绝对最安全"，只有最符合自己威胁模型（Threat Model）的浏览器（<a href="https://digatlas.blogspot.com/2026/07/philosophy-and-threat-model.html" rel="nofollow" target="_blank">本系列第二篇</a>也在强调）。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr"><b>&nbsp; 我个人的选择（仅代表个人偏好）</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 抛开上面的中立结论，如果只说我自己——我更偏向 Firefox，原因有三：</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 第一，引擎多样性。Firefox 是目前仍具主流竞争力的非 Blink 内核浏览器，我不希望网络标准最终由单一内核事实垄断。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 第二， Tor ——目前最成熟、部署最广的匿名网络——2008 年选择基于 Firefox （而非自建引擎）做深度改造，这本身是一个工程判断： Firefox 开源协议足够开放、Gecko 引擎足够可改造，才能满足对匿名性要求最苛刻的项目的需求。这不代表" Tor 认为 Firefox 隐私天生更强"，但可以视为一种旁证， Firefox 的底层开放程度，经受住了最挑剔项目的检验。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 第三，RFP 这项反指纹技术，正是从 Tor Uplift 项目迁移到 Firefox 主线的，这条技术传承路径，也是我更倾向 Firefox 的一个背景因素。</p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">当然，这只是我个人的取舍，不代表 Brave 不好——就像前面说的，浏览器选择的核心永远是你自己的威胁模型，不是哪个浏览器"绝对更强"。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp;</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp;</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 欢迎批评指正！&nbsp;</p></div></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/07/firefox-types-and-forks-connections-and-differences-comparison-with-brave.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 96 次 · 离线下载 4 次 · 已有 32 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/7184573685198585073', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

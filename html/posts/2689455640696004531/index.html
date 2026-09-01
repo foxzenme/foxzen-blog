@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>Windows 零基础使用 yt-dlp：从双击 exe 报错到下载第一个视频</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>Windows 零基础使用 yt-dlp：从双击 exe 报错到下载第一个视频</h1>
+<div class="meta">发布于 2026-07-27</div>
+<div class="meta-precise">最初发布：2026-07-26 16:06:14 (UTC) · 最后修改：2026-08-30 09:33:50 (UTC) · 全文6623字 · 预计阅读22分钟</div>
+<div class="tags"></div>
+<div class="content"><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525"><b data-end="534" data-start="525">适用人群：</b></p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">1、第一次使用 yt-dlp 的 Windows 用户</p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">2、双击 <code data-end="586" data-start="574">yt-dlp.exe</code> 后提示 <b data-end="629" data-start="591">Do not double-click the executable</b></p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">3、不知道 CMD 如何运行命令</p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">4、不理解 Windows CMD 中 <code data-end="674" data-start="671">^</code> 的作用</p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">5、希望获得一份可直接复制运行的 yt-dlp 命令模板</p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">&nbsp;</p><p class="PDq2pG_selectionAnchorContainer" data-end="534" data-start="525">&nbsp; 如果你双击 yt-dlp.exe 后看到这样的报错，说明你的操作方式是对的，只是打开方式不对：<br /><br />**yt-dlp.exe: error: Do not double-click the executable, instead call it from a command line.**<br /><br /><b>这不是程序坏了，也不是文件损坏——继续往下看，一定让你能解决。谢谢你的耐心阅读！&nbsp;</b></p><p>&nbsp;</p><p>&nbsp;</p><p>⚠️ 注意：请不要直接复制接下来本文中讲解的命令行模板。因为为了方便讲解，我在每行命令后面加入了大量中文说明，例如：<code><span>--write-info-json ^ （下载视频信息 JSON 文件），</span></code>这些中文说明只是文章注释，并不是 CMD 命令的一部分。如果直接复制，CMD 会把中文一起当作参数解析，导致命令报错。<b data-end="298" data-start="271">建议手动输入命令，或删除所有括号和括号内的中文说明后再复制。即除了最后一行，【必须】以&nbsp;</b>^ 为结尾，下文会具体阐述原因。文末附有无中文注释、可直接复制运行的命令行 CMD 模板。</p><p><b data-end="298" data-start="271">&nbsp;</b></p><p>&nbsp; 本文默认读者为 Windows 新手，几乎没有命令行基础。如果你已经熟悉 CMD 、CMD 如何调用 yt-dlp 、 PowerShell 、 FFmpeg 、路径 PATH 等概念，可以直接跳到最后命令行参数模板部分。<b data-end="298" data-start="271">&nbsp;</b></p><p>&nbsp;</p><p>&nbsp;&nbsp;</p><p>&nbsp; 你也许不知道 yt-dlp 是什么？鄙人浅薄介绍下。 yt-dlp 为【命令行】 YouTube 、B站等视频网站下载工具，为视频下载的“多功能瑞士军刀”；为【大部分】 YouTube下载软件的必备核心；为下载 YouTube 视频最直接、失败率最低、 GitHub 社区更新最活跃和复刻（ Fork ）最多的 YouTube 下载工具。可以下载视频、短视频（ shorts ）甚至整个频道【所有】视频！</p><p>&nbsp;</p><p>&nbsp;</p><p>&nbsp; 我是因为用户图形界面实在自定义程度低于 yt-dlp 、更新 yt-dlp 不够频繁和直观，直接选择了直达核心的命令行工具。顺便说一句，本人目前用的用户图形界面为免费开源的 Stacher ，但是缺点如上文所说。</p><p>&nbsp;</p><p>&nbsp;</p><p>&nbsp; 那怎么使用呢？大家也许看到命令行就望而却步，因为不如用户图形界面直观。大家直接双击点开 yt-dlp.exe 直接报错“Usage: yt-dlp.exe [OPTIONS] URL [URL...]<br /><br />yt-dlp.exe: error: Do not double-click the executable, instead call it from a command line.<br />Please read the README for further information on how to use yt-dlp: https://github.com/yt-dlp/yt-dlp#readme”，这更是令人捉摸不透，难道 exe 可执行文件不是直接点开嘛？很正常。其实，第一次使用 yt-dlp 的我，直接双击 yt-dlp.exe，看到一串英文报错，以为程序坏了，直接删除了。后来才知道，yt-dlp 根本不是图形界面软件，而是命令行工具。 接下来一一为大家详细讲解。</p><p>&nbsp;</p><p>&nbsp;</p><p>&nbsp; 下载和解压 yt-dlp 后，【不要】直接双击&nbsp;yt-dlp.exe ，而是在文件系统地址栏输入 cmd ，然后回车键输入，即直接在此包含 yt-dlp.exe 的文件夹打开 CMD 命令行工具（文末有图片讲述具体位置）；因为 yt-dlp 为命令行工具，所以必须结合系统自带命令行调用。接下来就是输入你想下载的内容，我在这里和最后提供我的模板和讲解，大家可自行更改。另：本文不会介绍 yt-dlp 的全部参数，大家有任何需要可检索官方 GitHub 讲解（ Wiki ）， yt-dlp 非常强大和功能多样、社区活跃。而是希望帮助第一次接触命令行的 Windows 用户，顺利完成第一次下载。后续参数可以在实践中慢慢学习。</p><p>&nbsp;</p><p>yt-dlp ^<br />-o "E:\2026\%(uploader)s\%(upload_date&gt;%Y)s\%(title)s [%(id)s]\%(title)s [%(id)s] %(upload_date&gt;%Y-%m-%d)s.%(ext)s" ^ （在E盘，创建 2026 文件夹， 2026 文件夹下以博主频道名分类；博主频道名下以发布年份分类；发布年份下以视频名和视频 ID 创建文件夹容纳该视频相关内容）<br />--download-archive "E:\2026\archive.txt" ^ （在E盘2026文件夹下用 archive.txt 文件记录已下载什么视频）<br />--merge-output-format mkv ^ （以当需要合并音视频时，以 MKV 作为合并后的容器格式。MKV 对视频、音频、字幕、章节、附件等数据的封装能力较强，适合本文这种偏向完整保存数据的归档场景）<br />--embed-info-json ^ （将 info.json 作为附件嵌入 MKV ，哪怕以后外部 JSON 文件丢失，视频内部仍保留完整元数据。该功能适用于 MKV/MKA 容器）<br />--embed-metadata ^ （嵌入视频元数据到如上所说 MKV 视频文件。此项和下两项其实有重叠，<code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">--embed-metadata</code> 默认已包含后两者，这里显式写出是为了让新手看清楚每个部分的作用）<br />--embed-chapters ^ （嵌入视频描述区的章节划分到如上所说 MKV 视频文件，如果没有将不会嵌入）<br />--embed-thumbnail ^ （嵌入缩略图、封面到如上所说 MKV 视频文件）<br />--write-info-json ^ （下载视频信息 JSON 文件）<br />--write-description ^&nbsp; （下载视频描述区到 .description 文件）<br />--write-thumbnail ^ （下载缩略图、封面为 .webp 格式）<br />--write-subs ^ （下载字幕文件，下有选项可规定什么语言，不规定则为默认全部语言）<br />--write-auto-subs ^ （下载 YouTube 自动生成的字幕）<br />--embed-subs ^ （嵌入字幕到如上所说 MKV 视频文件）<br />--sub-langs "zh-Hans,zh-CN,zh,en" ^ （字幕语言为简体中文和英文）<br />--sub-format "best" ^ （字幕格式优先级设为默认最佳可用格式，是否加入通常效果一样，这里是显式声明兜底）<br />--sleep-subtitles 60 ^（下载字幕时休眠60秒，因2026年最近如果频繁下载字幕，可能反而比视频更容易触发请求过多，即 429 Too Many Requests 限制）<br />--sleep-requests 5 ^ （请求之间休眠5秒）<br />--cookies-from-browser firefox ^ （使用Firefox浏览器 Cookies 用于访问需要登录才能获取的内容（如年龄限制、私人播放列表、会员视频等，前提是你的浏览器登录的账号本身拥有访问权限）。但建议下载时退出浏览器，因<b data-end="655" data-start="586">如果遇到 Cookies 无法正常读取，可尝试关闭浏览器后再次运行，或导出 Cookies 文件再使用。不同浏览器的实现略有差异。</b> 官方推荐直接使用 <code data-end="689" data-start="665">--cookies-from-browser</code>，也介绍了导出 Cookies 文件的方法。 ）<br />--ignore-errors ^ （忽略下载错误，即遇到错误也不会停下来，继续下个任务）<br />-N 4 ^ （4个并发）<br />"你要下载的视频网址或者频道网址等"&nbsp;</p><p>&nbsp;</p><p>附：--proxy http://127.0.0.1:端口号 ^ （代理地址和端口）&nbsp;</p><p>--skip-download （是不下载视频，只写如上所说相关文件，即 元数据 、视频描述 、 视频封面 、字幕等）</p><p>&nbsp;</p><p class="PDq2pG_selectionAnchorContainer" data-end="1617" data-start="1589"><b data-end="1617" data-start="1589">&nbsp; 如果你第一次接触命令行，不需要一次看懂全部参数。</b><span aria-hidden="true" class="PDq2pG_selectionAnchor"></span></p>
+<p data-end="1666" data-start="1622"><b data-end="1666" data-start="1622">&nbsp; 先复制整条命令运行成功，再慢慢删除、修改其中的参数，就会逐渐理解每个参数的作用。</b></p><p data-end="1666" data-start="1622"><b data-end="1666" data-start="1622">&nbsp;</b></p><p data-end="1666" data-start="1622"><b data-end="1666" data-start="1622">&nbsp;</b></p><p data-end="1666" data-start="1622"><b data-end="1666" data-start="1622">&nbsp;</b><span data-end="1666" data-start="1622">大家可能会遇到 WARNING: [youtube] No supported JavaScript runtime could be found...，不要怕，这</span>是可选的，装个 Deno（</p><pre style="background: rgb(245, 245, 245); border-radius: 4px; font-family: monospace; overflow-x: auto; padding: 12px;"><code>winget install DenoLand.Deno</code></pre>）能让部分格式提取更完整，不装也能下载，只是可能拿不到全部格式。<p data-end="1666" data-start="1622"><br /></p><p data-end="1666" data-start="1622">&nbsp;</p><p>&nbsp; 2026-08-27 修正：现在建议安装 Deno。如果你看到：</p>
+
+<pre><code>WARNING: [youtube] No supported JavaScript runtime could be found...</code></pre>
+
+<p>&nbsp; 现在<b>建议不要忽略这个提示</b>。</p>
+
+<p>&nbsp; yt-dlp 为了完整支持 YouTube，需要使用外部 JavaScript runtime（JavaScript 运行时）处理 YouTube 的 JavaScript challenges（JavaScript 挑战）。目前官方推荐使用 <b>Deno</b>，并且 Deno 默认就是 yt-dlp 启用的 JavaScript runtime。没有 JavaScript runtime 时，yt-dlp 仍可能下载部分 YouTube 内容，但格式可用性会受到限制，在某些情况下限制会比较明显。</p>
+
+<p>&nbsp; Windows 用户可以直接在 PowerShell 或者 CMD 中安装（记得给管理员权限。调用 PowerShell 可在右键最左下角开始菜单，点击”Windows PowerShell （管理员）“）：</p>
+
+<pre><code>winget install DenoLand.Deno</code></pre>
+
+<p>&nbsp; 安装完成后，可以检查：</p>
+
+<pre><code>deno --version</code></pre>
+
+<p>&nbsp; 如果能够正常显示版本号，就说明 Deno 已经安装成功。</p>
+
+<p>&nbsp; 截至目前，yt-dlp 官方要求 Deno 最低版本为 <b>2.3.0</b>。</p>
+
+<p>&nbsp;&nbsp;对于官方发布的 <code data-end="1466" data-start="1454">yt-dlp.exe</code>，目前已经包含所需的 <code data-end="1489" data-start="1477">yt-dlp-ejs</code> JavaScript challenge solver，因此 Windows 新用户通常不需要再单独安装 <code data-end="1555" data-start="1543">yt-dlp-ejs</code>；但仍然需要准备一个受支持的 JavaScript runtime，本文推荐 Deno。前面已说明如何安装。</p>
+
+<p><b>&nbsp; 因此，现在推荐 Windows 新用户在安装 yt-dlp 后，同时准备 Deno 和 FFmpeg，再开始下载 YouTube。</b></p><p data-end="1666" data-start="1622"><b data-end="1666" data-start="1622">&nbsp;</b>&nbsp;</p><p data-end="1666" data-start="1622">&nbsp;</p><p data-end="1666" data-start="1622">&nbsp; 提醒大家注意和窍门：1、可以将大名鼎鼎、开源的 FFmpeg 放到和 yt-dlp 一个文件夹（文末有图片说明），视频后处理字幕和合成等 yt-dlp 直接调用同文件夹的&nbsp; FFmpeg ，只要放 ffmpeg.exe 、ffprobe.exe 即可。如果没有 FFmpeg，很多后处理功能（如音视频合并、嵌入字幕、嵌入封面等）将无法完成。（文末有图片说明）</p><p data-end="1666" data-start="1622">2、&nbsp;^ 请大家不要忽略，这【不是】yt-dlp 的参数。这是 Windows CMD 的语法，不是 yt-dlp 的参数。它表示命令换行，使一条很长的命令能够分成多行书写。每一行末尾（最后一行除外）都需要保留 <code data-end="787" data-start="784">^</code>&nbsp;，否则 CMD 会提前结束命令。</p><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;3、接上， Linux/macOS 用户一般使用 <code data-end="909" data-start="906">\</code> 作为 Shell 的续行符，而 Windows CMD 使用&nbsp;&nbsp;<code data-end="944" data-start="941">^</code>&nbsp;。因此网上很多 Linux 教程【不能】直接复制到 CMD 中。&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;"><br /></div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp; 2026-08-27 修正：4、非常建议、甚至必须准备 Deno，用于 YouTube 的 JavaScript challenges。即解析网页的 JavaScript 代码，获得各种要下载的内容。</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp; 2026-08-29 补充：大家肯定会遇到 YouTube 网站更新，yt-dlp 当然也要更新适应最新网页，为了下载视频（不更新可能会被发现是自动软件、机器人下载视频，会卡进度条、下载失败等）。那 yt-dlp 如何更新？还是像下载视频那样，在文件系统地址栏输入 cmd&nbsp;（文末有图片说明），然后回车键输入，即直接在此打开 CMD 命令行工具；然后输入&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;"><pre><code>yt-dlp -U</code></pre>&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">U 即 Update ；为更新，即自动会从 GitHub 下载最新版</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><div data-end="1666" data-start="1622" style="text-align: left;">附我的 yt-dlp 文件夹截图，解释什么为文件系统地址栏，即图片最上面变蓝的字体。还有要放什么 FFmpeg 文件做后处理。<div class="separator" style="clear: both; text-align: center;"><a href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjoyTDSMIg1o7sfzlo-6yv-QxJP3iNNyMShk_LWmPP8k_lbasJKNwCJ_cOX56uCKGYe_Xa8Bggc5BK8rvST2yMwjcbJpxx151-jMd9HuWDsAHjTSNlBhdebTm3Mgg4pUbhOyFn2URh8pcoXjUfIU9_IgotNWN9XYc6j3ccGYWGOCwUU8MVK8Foavwqa1VxF/s776/%E5%B1%8F%E5%B9%95%E6%88%AA%E5%9B%BE%202026-08-28%20092259.png" style="margin-left: 1em; margin-right: 1em;"><img border="0" data-original-height="201" data-original-width="776" src="/posts/2689455640696004531/media/5373dedc3969.png" /></a></div><br /></div><div data-end="1666" data-start="1622" style="text-align: left;">&nbsp;</div><p>&nbsp;</p><p>附可直接复制粘贴命令行模板，且我会长期维护这篇文章，欢迎补充和纠正：</p><pre style="background: rgb(245, 245, 245); border-radius: 4px; font-family: monospace; overflow-x: auto; padding: 12px;"><code>yt-dlp ^
+-o "E:\2026\%(uploader)s\%(upload_date&gt;%Y)s\%(title)s [%(id)s]\%(title)s [%(id)s] %(upload_date&gt;%Y-%m-%d)s.%(ext)s" ^
+--download-archive "E:\2026\archive.txt" ^
+--merge-output-format mkv ^
+--embed-info-json ^
+--embed-metadata ^
+--embed-chapters ^
+--embed-thumbnail ^
+--write-info-json ^
+--write-description ^
+--write-thumbnail ^
+--write-subs ^
+--write-auto-subs ^
+--embed-subs ^
+--sub-langs "zh-Hans,zh-CN,zh,en" ^
+--sub-format "best" ^
+--sleep-subtitles 60 ^
+--sleep-requests 5 ^
+--cookies-from-browser firefox ^
+--ignore-errors ^
+-N 4 ^
+"https://www.youtube.com/watch?v=示例链接"</code></pre><p></p>
+
+<script>
+document.addEventListener('copy', function() {
+  var selection = window.getSelection().toString();
+  if (selection.indexOf('yt-dlp') !== -1) {
+    if (typeof gtag === 'function') {
+      gtag('event', 'copy_yt_dlp_template', {
+        'event_category': 'engagement',
+        'event_label': 'yt-dlp command template copied'
+      });
+    }
+  }
+});
+</script><p></p><p></p></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/07/yt-dlp-windows-cmd-tutorial-for-beginner.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 196 次 · 离线下载 20 次 · 已有 50 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/2689455640696004531', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

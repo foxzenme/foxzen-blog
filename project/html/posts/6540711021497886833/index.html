@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第二篇：总体哲学浅议和威胁模型判断</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第二篇：总体哲学浅议和威胁模型判断</h1>
+<div class="meta">发布于 2026-07-28</div>
+<div class="meta-precise">最初发布：2026-07-28 15:49:00 (UTC) · 最后修改：2026-08-04 16:14:12 (UTC) · 全文2278字 · 预计阅读8分钟</div>
+<div class="tags"><a href="/index.html?tag=Arkenfox">#Arkenfox</a><a href="/index.html?tag=Betterfox">#Betterfox</a><a href="/index.html?tag=Firefox">#Firefox</a><a href="/index.html?tag=Firefox Hardening">#Firefox Hardening</a><a href="/index.html?tag=Firefox隐私加固">#Firefox隐私加固</a></div>
+<div class="content"><p>&nbsp; 在开始讲解步骤和原理前，我提供给大家我的真实实例，帮助大家理解什么是正确加固哲学，以及如何大致判断威胁模型、使用符合自己威胁模型的加固策略、哲学。</p><p>&nbsp;</p><p>&nbsp; 首先，简单解释下，所谓威胁模型，就是"你真正要防谁、为什么要防"。我们做的一切都是围绕威胁模型【正确】展开。不能做出不符合威胁模型的防御。（本文最末有图示）</p><p>&nbsp;</p><p>&nbsp; 下面是真实实例：我的 Firefox 肯定是高度加固，修改了很多隐藏的配置项；我之前总听 Reddit社区的 Linux 、 Firefox 、 Privacy 等板块告诫“有时修改越多，反而越特殊、小众，越容易被识别”。我当时不以为意。后来我的旧 Reddit 账户不知为何被封禁，申诉无望后同样浏览器实例、不同的纯净的多账户容器扩展（后面篇章将介绍，简单来说顾名思义，就是通过容器隔离浏览器环境，让你可以同时运行多账户）、无关联的 Gmail 创建新账户，但新账户很快又出现明显的“暗中封禁（ Shadowban ，区别于"明确封号"，用户看不出自己被限制，内容仍然可见给自己但对其他人不可见）”，即“评论从第一天开始甚至无人点赞、阅读，发布的任何帖子被立刻移除”等明显被针对的现象。后来2周后被再次封禁。后来我和 Gemini 讨论后，认为是注册的时候就被认为、发现是异常，2周后封禁，大概率是尽量不让你反推出平台风控策略。</p><p>&nbsp;</p><p>&nbsp; 困惑的我思考后，认为有可能是碰到了之前被告诫的“有时修改越多，反而越特殊、小众，越容易被识别” ，我【同设备】新建【未经修改、纯净的】实例，用同样 IP 地址、同样的大版本 Firefox ，注册新账户，第一天评论就有2个点赞。到现在越来越好。</p><p>&nbsp;</p><p>&nbsp; 当然你可以说我实验次数不够，我承认是不够，因为我关闭了 Firefox 隐私强化，如果纯净实例再去注册账户肯定是被发现同一个人（后面篇章会讲述为什么能发现是同一人）；故可能让实验结果加入过多变量。但是我完全可以负责任说，我能保证除了是否隐私强化，其他条件均相同。因此我初步推测，Reddit 的风控系统认为这个新账户与此前被封禁账户具有高度相似的环境特征，从而提高了风险评分或审核强度。至于具体采用哪些信号、是否进行了账号关联，外界无法确认，因此这里只能作为基于实践的推测，而非确定结论。需要说明的是，这只是一次个案对照（ n=1 ），虽然除加固状态外其余可观察变量基本保持一致，但样本量不足以排除偶然因素（如平台审核策略的临时调整、随机人工复核等）；此处仅作为引出'融入匿名集合（本文下文解释该名词）'这一思路的实践观察，不代表严谨意义上的因果结论（虽然鄙人主观认为基本上也可以确定是这个原因了）。</p><p>&nbsp;</p><p>&nbsp; 回到我们说的威胁模型判断。我上篇文章明确，我们目前最大威胁，是商业追踪和识别，而并非更高等级威胁，例如国家级攻击威胁、高级持续性威胁（ APT， Advanced Persistent Threat ）、供应链投毒（ Supply Chain Poisoning ） ，这些需要更高级的工具和包括计算机方面在内的各个方面的谨小慎微。（本文最末有图示）</p><p>&nbsp;</p><p>&nbsp; 所以，综上所述，我们要解决的、威胁模型是商业追踪和识别，这并非难事，大家不要产生恐惧。我们的【总体加固哲学】应该是<b>“降低可追踪性，同时尽量融入正常用户群体（ blend in ）”</b>。一个极度少见的浏览器配置，虽然泄露的信息更少，但如果世界上只有极少数人在使用，它本身就可能成为一种新的识别特征。这也是我第一次意识到，抗指纹追踪（以后可能简称为 RFP ）&nbsp;<code data-end="816" data-start="786">privacy.resistFingerprinting</code> 的设计目标是降低浏览器指纹的可识别性，而不是保证任何网站都会认为我是一个"低风险用户"。Mozilla 目前也明确表示，该功能主要面向高级用户，并不推荐普通用户长期启用，普通用户更适合使用 Firefox 默认条件下开箱即用的指纹跟踪保护 Fingerprinting Protection （后面篇章会介绍）。</p><p>&nbsp;</p><p>&nbsp; 其实，隐匿自己一直有2个总体思路：1、 让自己每次特征都不一样（这也许不是 Firefox 擅长的，后面篇章会介绍）；2、自己融入大家，让自己归一化（ Normalization ），让大家看上去都一样。我的实例说明，当你的浏览器配置变得十分少见，而又长期保持稳定时，它反而可能成为一种值得风控系统关注的特征。这并不意味着隐私强化没有意义，而是提醒我们：隐私保护的目标，不只是减少暴露的信息，也包括尽量融入足够大的匿名集合（ Anonymity Set ，想象你在人群里躲藏，人群（也就是和你用一样配置的其他 Firefox 用户）越多，你被单独认出来的概率就越低（开启 Firefox 抗指纹跟踪的人群就是一个匿名集）；如果只有你一个人穿了与众不同的衣服，反而更显眼。这也是为什么普通用户（反而可能）更适合用默认的指纹跟踪保护 Fingerprinting Protection——它本身覆盖的用户基数比抗指纹跟踪 resistFingerprinting 大得多，匿名集反而更大）。（下文有图示）</p><p>&nbsp;</p><p>&nbsp; 欢迎批评指正！&nbsp;</p><p>&nbsp;</p><p>附GPT生成的图片，对威胁等级、修改是否过多、 Reddit 社区账户进行图解</p><div class="separator" style="clear: both; text-align: center;"><a href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEi5VeUBlKnqFcGL9cAxLdHs3844BciMlxE6siFhdvYYF0RLbmLQM1gwTJTX1DeU4yX7ISK5DAfgXziEJ-ofoAd9IIEFIblOgI16fRhbOQkK_Ow2mPzV2VG8R9xxQCFx1Z0enurJvUqBcS2Uskvqmr0joY0rQTGD5Whk9nALKZu_SqSlbYxHuFEjZZ7g06S-/s1652/ChatGPT%20Image%202026%E5%B9%B47%E6%9C%8829%E6%97%A5%2004_11_50.png" style="margin-left: 1em; margin-right: 1em;"><img border="0" data-original-height="952" data-original-width="1652" src="/posts/6540711021497886833/media/51aff1efce72.png" /></a></div><br />&nbsp;<p></p></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/07/philosophy-and-threat-model.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 119 次 · 离线下载 10 次 · 已有 31 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/6540711021497886833', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

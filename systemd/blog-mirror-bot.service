@@ -1,0 +1,15 @@
+[Unit]
+Description=blog-mirror Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/blog-mirror
+Environment="TG_BOT_TOKEN=REDACTED"
+Environment="TG_CHAT_ID=REDACTED"
+ExecStart=/root/blog-mirror/venv/bin/python3 telegram_bot.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

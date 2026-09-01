@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列附录2：安卓用户其实更应该试试 Firefox</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列附录2：安卓用户其实更应该试试 Firefox</h1>
+<div class="meta">发布于 2026-08-27</div>
+<div class="meta-precise">最初发布：2026-08-27 14:00:00 (UTC) · 最后修改：2026-08-28 06:41:53 (UTC) · 全文5696字 · 预计阅读19分钟</div>
+<div class="tags"><a href="/index.html?tag=Arkenfox">#Arkenfox</a><a href="/index.html?tag=Betterfox">#Betterfox</a><a href="/index.html?tag=Firefox">#Firefox</a><a href="/index.html?tag=Firefox Hardening">#Firefox Hardening</a><a href="/index.html?tag=Firefox隐私加固">#Firefox隐私加固</a></div>
+<div class="content"><p>&nbsp; &nbsp;前面的文章一直在讲桌面版 Firefox，尤其是 Windows 上的各种首选项、RFP、Arkenfox、Betterfox 和 user-overrides.js。写到这里，我突然觉得有必要单独补充一篇：其实对于 Android 用户来说，Firefox 有一些非常容易被忽略的“福利”。甚至有些功能，在手机上使用的时候，体感比电脑上更加明显。</p><p class="isSelectedEnd">　为什么这么说？</p><p class="isSelectedEnd">　因为 Android Firefox 同时拥有一个非常重要的组合：【浏览器本身的隐私保护 + Android 扩展体系 + Firefox 自己的后台媒体能力】。</p><p class="isSelectedEnd">　这三个东西组合起来，就会出现一些非常有意思的使用体验。</p><p class="isSelectedEnd">（一）首先，Android 版 Firefox 绝对不是“缩水到只能打开网页”的浏览器。这一点非常重要。这可不是 iOS 上的【所有】浏览器都是苹果自己的 Webkit 内核，这是 Mozilla 自己的完整安卓内核；扩展性、安全性、隐私性让人刮目相看。</p><p class="isSelectedEnd">　以前很多人对手机 Firefox 的印象是：“电脑 Firefox 很厉害，但是 Android 版就算了。”这种印象已经不太符合现在的实际情况。Mozilla 当前官方文档仍然把 Firefox for Android 的跟踪保护、指纹保护、后台播放、画中画以及扩展都作为正式功能维护。</p><p class="isSelectedEnd">　尤其是扩展。Android 版 Firefox 可以直接安装 Firefox Add-ons，也就是我们前面反复讲的扩展。这件事情在手机浏览器里其实非常重要。因为很多 Chromium 系浏览器的移动版本，通常不会给你一个和桌面浏览器相近的扩展生态。而 Firefox Android 可以。你甚至可以直接安装我们已经非常熟悉、（我最喜欢的）的 uBlock Origin。目前 Mozilla Add-ons 官方页面仍然把 uBlock Origin 标记为支持 Android，而且当前版本仍然持续更新；截至本文写作时，Android 版最新版本已经更新到了 1.74.0。</p><p class="isSelectedEnd">　这意味着什么？意味着你的手机浏览器，不再只是：“浏览网页。”而是可以真正拥有一层属于你自己的“网页过滤系统”；近乎桌面端浏览器。</p><p class="isSelectedEnd"><br /></p><p class="isSelectedEnd">（二）手机 Firefox 的隐私保护，其实比很多人想象得强</p><p class="isSelectedEnd">　前面那么多篇文章，我们花了大量篇幅讲 RFP，也就是 Resist Fingerprinting，抗指纹跟踪。Firefox Android 本身就已经提供针对指纹追踪的防护。Mozilla 官方文档明确说明，Android 版 Firefox 的增强型跟踪保护会拦截已知指纹追踪器，并且会限制浏览器向网站暴露的一系列设备信息，以降低网站通过“独特特征组合”识别设备的能力。</p><p class="isSelectedEnd">　严格模式下，普通浏览模式会启用已知指纹追踪器防护；在隐私浏览模式下，还会进一步启用针对“可疑指纹追踪器”的保护。</p><p class="isSelectedEnd">　也就是说：你拿着手机打开网页的时候，网站并不只是看到一个“Android”。它理论上还可能试图观察你的屏幕、语言、字体、设备环境、各种 Web API 的表现。Firefox 和桌面端一样，会主动减少这些信息的暴露。</p><p class="isSelectedEnd">&nbsp; 这就是为什么我认为：Android Firefox 的价值不只是“能装几个插件”。它本身就是一个比较完整的隐私浏览器。</p><p class="isSelectedEnd">　当然，这里也要说清楚：Mozilla 对 RFP 的官方说明同样提醒，真正的高级 RFP 配置可能影响网站兼容性。也就是说，隐私保护越激进，网站出现异常的概率也可能增加。</p><p class="isSelectedEnd">　因此，我仍然建议根据自己的威胁模型来选择保护等级，而不是为了看到一个“指纹测试分数”就疯狂开关。</p><p class="isSelectedEnd">（三）然后就是我认为 Android Firefox 最有意思的地方了：扩展。</p><p class="isSelectedEnd">　电脑上的 Firefox 之所以好玩，很大程度上就是因为扩展。而现在 Android Firefox 也把这一部分能力带到了手机上。例如前面说的 uBlock Origin。这不是单纯的“广告屏蔽插件”。它本质上是一套非常强大的内容过滤系统，可以过滤广告、追踪器、恶意 URL、弹窗等，而且还支持大量自定义过滤规则。目前 Mozilla Add-ons 官方页面仍明确显示，uBlock Origin 支持 Firefox for Android，而且开发者声明该扩展不需要收集数据。</p><p class="isSelectedEnd">　于是你可以想象一下：</p><p class="isSelectedEnd">　一个 Android 手机。</p><p class="isSelectedEnd">　一个 Firefox。</p><p class="isSelectedEnd">　再加一个 uBlock Origin。</p><p class="isSelectedEnd">　你得到的就不再只是：</p><p class="isSelectedEnd">　“Google Chrome 的另一个版本。”</p><p class="isSelectedEnd">　而是一个可以由自己决定：</p><p class="isSelectedEnd">　网页允许加载什么；网页不允许加载什么；哪些追踪器直接拒绝；哪些脚本可以运行；哪些广告资源根本没有机会下载到手机上的浏览器。</p><p class="isSelectedEnd">　而且这不仅仅是“看起来更清爽”。</p><p class="isSelectedEnd">　少加载一些广告和追踪资源，本身也意味着少下载一些网络内容、少执行一些网页代码。</p><p class="isSelectedEnd">　对于流量有限、手机性能有限的场景，这些变化反而更加容易被感知。</p><p class="isSelectedEnd">（四）好了，真正让我觉得“Android 用户可以白捡一个福利”的东西来了：YouTube 后台播放。</p><p class="isSelectedEnd">　Firefox for Android 官方本身就支持后台播放。</p><p class="isSelectedEnd">　Mozilla 的帮助文档直接写得非常明确：</p><p class="isSelectedEnd">　当你最小化 Firefox 时，如果网页正在播放视频或者音频，它可以继续在后台播放。通知栏也会出现媒体控制按钮。</p><p class="isSelectedEnd">　也就是说：打开网页、播放内容、回到桌面、甚至切换到其他 App、音频仍然可以继续。</p><p class="isSelectedEnd">　Firefox 官方把这项能力直接称为 background playback。</p><p class="isSelectedEnd">　这时候你可能已经发现了：</p><p class="isSelectedEnd">　“那 YouTube 岂不是……”</p><p class="isSelectedEnd">　对。事情就是这么有意思。</p><p class="isSelectedEnd">　如果你把 YouTube 当成“视频网站”，那么你可能非常在意屏幕。</p><p class="isSelectedEnd">　但如果你把 YouTube 当成“一个巨大的音频数据库”，事情就完全不一样了。</p><p class="isSelectedEnd">　例如：</p><p class="isSelectedEnd">　听播客；</p><p class="isSelectedEnd">　听讲座；</p><p class="isSelectedEnd">　听公开课；</p><p class="isSelectedEnd">　听访谈；</p><p class="isSelectedEnd">　听新闻；</p><p class="isSelectedEnd">　听音乐；</p><p class="isSelectedEnd">　甚至只是找一个长视频当作背景声音。</p><p class="isSelectedEnd">　这些内容很多时候根本不需要亮着屏幕。</p><p class="isSelectedEnd">　你真正想要的其实只是：</p><p class="isSelectedEnd">　【锁屏以后继续听】；而且这本来是 YouTube 付费会员才可以的。当然 iOS 端就无福消受了。</p><p class="isSelectedEnd">（五）不过，2026 年这里有一个非常重要的变化</p><p class="isSelectedEnd">　以前很多 Android 浏览器可以直接让 YouTube 网页在后台播放。</p><p class="isSelectedEnd">　但现在不能再简单地写：</p><p class="isSelectedEnd">　“Firefox 一定可以。”</p><p class="isSelectedEnd">　因为 YouTube 在 2026 年开始进一步限制移动浏览器的后台播放。</p><p class="isSelectedEnd">　Mozilla 支持论坛在 2026 年 2 月的一起 Firefox Android 问题中，就有用户反馈升级后 YouTube 锁屏播放突然失效，论坛回复指出 YouTube 已经针对移动设备上的非 Chrome 浏览器进一步限制后台播放。</p><p class="isSelectedEnd">　所以今天更加准确的说法是：</p><p class="isSelectedEnd">　【Firefox 本身支持后台媒体播放，但 YouTube 是否允许网页在后台继续播放，已经开始受到 YouTube 自身策略影响。】</p><p class="isSelectedEnd">　这其实反而体现出 Firefox 扩展系统的意义。</p><p class="isSelectedEnd">（六）因为我们可以给它加一个扩展</p><p class="isSelectedEnd">　目前 Mozilla Add-ons 上已经存在专门解决这个问题的扩展。</p><p class="isSelectedEnd">　例如 “Youtube Background Play Fix”。</p><p class="isSelectedEnd">　它的功能非常直白：防止 YouTube 和 YouTube Music 在 Firefox 进入后台、最小化或者切换标签页的时候停止播放。</p><p class="isSelectedEnd">　而且官方扩展页面明确写着：它支持 Android。当前版本为 1.2.0。项目源码公开在 GitHub。开发者还明确声明不需要收集数据。</p><p class="isSelectedEnd">　也就是说：Firefox 自己负责浏览网页，扩展负责解决 YouTube 的后台播放限制。</p><p class="isSelectedEnd">　两个东西叠加起来，就能实现一个非常实用的效果：</p><p class="isSelectedEnd">　【不用前面说的付费会员 YouTube Premium，也可以把很多 YouTube 内容当成后台音频来听】</p><p class="isSelectedEnd">　当然，这里我还是要强调“很多”。不是“100% 所有视频、所有时候都保证”。因为扩展毕竟是在和网站不断变化的播放器逻辑对抗。YouTube 改一次策略，扩展作者可能就要跟着更新。</p><p class="isSelectedEnd">　目前也确实已经出现专门针对新版 YouTube 后台播放限制进行修复的 Firefox Android 扩展。比如 “Background Playback Helper (YouTube &amp; Vimeo)” 就明确声称可以在切换应用、切换标签页以及锁屏后维持 YouTube、YouTube Music 和 Vimeo 的播放，而且最近版本还专门修复了 YouTube 新的阻止方式。</p><p class="isSelectedEnd">（七）这时候你大概已经能看出来：</p><p class="isSelectedEnd">　Android Firefox 的“福利”其实不只是一个功能。</p><p class="isSelectedEnd">　它是一整套组合。</p><p class="isSelectedEnd">　例如：</p><p class="isSelectedEnd">　Firefox 的跟踪保护；</p><p class="isSelectedEnd">　Firefox 的指纹保护；</p><p class="isSelectedEnd">　Firefox 的后台播放；</p><p class="isSelectedEnd">　Firefox 的画中画；</p><p class="isSelectedEnd">　Firefox 的扩展；</p><p class="isSelectedEnd">　uBlock Origin；</p><p class="isSelectedEnd">　针对特定网站的功能增强扩展。</p><p class="isSelectedEnd">　这些东西组合起来，才真正体现 Firefox Android 的价值。</p><p class="isSelectedEnd">　Mozilla 官方也确实把 Firefox Android 的后台播放和 Picture-in-Picture（画中画）作为正式功能。画中画的好处就更加明显了：</p><p class="isSelectedEnd">　你可以一边做别的事情，一边继续看网页视频。</p><p class="isSelectedEnd">　这其实非常适合：</p><p class="isSelectedEnd">　公开课；</p><p class="isSelectedEnd">　教程；</p><p class="isSelectedEnd">　新闻；</p><p class="isSelectedEnd">　演讲；</p><p class="isSelectedEnd">　体育赛事；</p><p class="isSelectedEnd">　长视频。</p><p class="isSelectedEnd">　手机浏览器终于不再是“只能打开一个网页然后盯着看”。</p><p class="isSelectedEnd">（八）这也解释了为什么我越来越觉得：</p><p class="isSelectedEnd">　【Android 用户比桌面用户更值得认真考虑 Firefox】</p><p class="isSelectedEnd">　桌面上，你可能已经有：</p><p class="isSelectedEnd">　Chrome；</p><p class="isSelectedEnd">　Edge；</p><p class="isSelectedEnd">　Brave；</p><p class="isSelectedEnd">　Firefox。</p><p class="isSelectedEnd">　差别有时候没有那么明显。</p><p class="isSelectedEnd">　因为电脑本来就可以安装各种软件。</p><p class="isSelectedEnd">　你可以单独安装播放器。</p><p class="isSelectedEnd">　可以安装广告拦截器。</p><p class="isSelectedEnd">　可以装下载工具。</p><p class="isSelectedEnd">　可以装专门的密码管理器。</p><p class="isSelectedEnd">　可以开很多浏览器。</p><p class="isSelectedEnd">　手机则不一样。</p><p class="isSelectedEnd">　手机上的浏览器承担了更多事情。</p><p class="isSelectedEnd">　一个浏览器可能同时承担：</p><p class="isSelectedEnd">　网页浏览；</p><p class="isSelectedEnd">　视频网站；</p><p class="isSelectedEnd">　在线学习；</p><p class="isSelectedEnd">　音频播放；</p><p class="isSelectedEnd">　隐私保护；</p><p class="isSelectedEnd">　广告拦截；</p><p class="isSelectedEnd">　脚本控制；</p><p class="isSelectedEnd">　网页登录。</p><p class="isSelectedEnd">　所以一个浏览器有没有扩展体系，影响会被放大。</p><p class="isSelectedEnd">（九）而且还有一个非常容易被忽略的点：</p><p class="isSelectedEnd">　【Firefox 并没有要求你使用这些扩展】</p><p class="isSelectedEnd">　你可以保持完全原生的 Firefox。</p><p class="isSelectedEnd">　也可以安装 uBlock Origin。</p><p class="isSelectedEnd">　也可以只安装一个 YouTube 后台播放扩展。</p><p class="isSelectedEnd">　甚至可以根据网站单独开启、关闭扩展。</p><p class="isSelectedEnd">　这意味着：</p><p class="isSelectedEnd">　Firefox Android 并不是：</p><p class="isSelectedEnd">　“你必须接受我的这一套隐私哲学。”</p><p class="isSelectedEnd">　而是：</p><p class="isSelectedEnd">　“浏览器给你工具，你自己决定怎么组合。”</p><p class="isSelectedEnd">　这和我们前面一直讨论的 Firefox 配置思想其实是完全一致的。</p><p class="isSelectedEnd">（十）那么，Android 用户到底应该怎么选？</p><p class="isSelectedEnd">　如果你只是偶尔用手机浏览网页，而且没有任何隐私方面的需求，那么 Chrome 当然也完全可以。</p><p class="isSelectedEnd">　如果你非常看重 Google 服务深度整合，那么 Chromium 系浏览器也可能更省心。</p><p class="isSelectedEnd">　但如果你的需求是：</p><p class="isSelectedEnd">　希望减少网站追踪；</p><p class="isSelectedEnd">　希望拥有更强的指纹防护；</p><p class="isSelectedEnd">　希望可以安装 uBlock Origin；</p><p class="isSelectedEnd">　希望浏览器能够扩展；</p><p class="isSelectedEnd">　希望 YouTube 内容可以尝试后台播放；</p><p class="isSelectedEnd">　希望手机浏览器也能像桌面 Firefox 一样进行一定程度的“自己做主”；</p><p class="isSelectedEnd">　那么：</p><p class="isSelectedEnd">　【Firefox Android 非常值得试一试。】</p><p class="isSelectedEnd">　甚至我认为，它并不是“桌面 Firefox 的手机版”。</p><p class="isSelectedEnd">　更准确地说：</p><p class="isSelectedEnd">　它是一个把 Firefox 的一些核心理念带进手机的浏览器。</p><p class="isSelectedEnd">（十一）当然，最后还是要泼一盆冷水</p><p class="isSelectedEnd">　不要把 Firefox Android 神化。</p><p class="isSelectedEnd">　它不是“装完以后所有网站都自动隐私”。</p><p class="isSelectedEnd">　也不是“装了 uBlock Origin 就等于完全匿名”。</p><p class="isSelectedEnd">　更不是：</p><p class="isSelectedEnd">　“开了 RFP，就再也没人能识别你。”</p><p class="isSelectedEnd">　Mozilla 自己都明确提醒，指纹防护可能造成网站兼容性问题。</p><p class="isSelectedEnd">　YouTube 也会不断改变自己的播放器策略。</p><p class="isSelectedEnd">　扩展也可能出现兼容性问题。</p><p class="isSelectedEnd">　Android 系统本身也可能限制后台进程。</p><p class="isSelectedEnd">　所以最准确的评价应该是：</p><p class="isSelectedEnd">　【Firefox Android 给了你更多控制权。】</p><p class="isSelectedEnd">　至于你最终能把这些控制权发挥到什么程度，取决于：</p><p class="isSelectedEnd">　你的配置；</p><p class="isSelectedEnd">　你的扩展；</p><p class="isSelectedEnd">　你的使用场景；</p><p class="isSelectedEnd">　以及网站本身有没有继续和你“斗法”。</p><p class="isSelectedEnd">（十二）最后总结一下我为什么特别想写这篇附录</p><p class="isSelectedEnd">　前面的文章一直在讲：</p><p class="isSelectedEnd">　“Firefox 为什么可以这么折腾？”</p><p class="isSelectedEnd">　到了 Android，我突然发现：</p><p class="isSelectedEnd">　其实很多人根本不知道 Firefox Android 现在已经可以做到这么多事情。</p><p class="isSelectedEnd">　它有自己的跟踪保护。</p><p class="isSelectedEnd">　有针对指纹追踪的防护。</p><p class="isSelectedEnd">　有扩展。</p><p class="isSelectedEnd">　可以安装 uBlock Origin。</p><p class="isSelectedEnd">　可以后台播放。</p><p class="isSelectedEnd">　可以画中画。</p><p class="isSelectedEnd">　甚至可以通过专门的扩展处理 YouTube 的后台播放限制。</p><p class="isSelectedEnd">　所以如果你手里有一部 Android 手机，而且你刚好也是一个喜欢折腾浏览器的人：</p><p class="isSelectedEnd">　那么 Firefox Android 真的是一个非常值得玩的东西。</p><p class="isSelectedEnd">　尤其是：</p><p class="isSelectedEnd">　当你发现自己躺在床上、把 YouTube 视频打开、手机一锁屏，耳机里居然还在继续播放的时候……</p><p class="isSelectedEnd">　你可能会突然意识到：</p><p class="isSelectedEnd">　“等等，我为什么以前要花钱买 Premium？”</p><p class="isSelectedEnd">　哈哈。</p><p class="isSelectedEnd">　当然，具体效果会随着 YouTube 的策略和扩展更新而变化。</p><p class="isSelectedEnd">　所以这一篇最后我反而想给 Android 用户一句非常简单的话：</p><p class="isSelectedEnd">　【别急着评价 Firefox Android 不行】</p><p class="isSelectedEnd">　先下载下来。</p><p class="isSelectedEnd">　装个 uBlock Origin。</p><p class="isSelectedEnd">　打开一个你平时经常看的 YouTube 长视频。</p><p class="isSelectedEnd">　把手机屏幕关掉。</p><p class="isSelectedEnd">　然后自己听听看。</p><p class="isSelectedEnd">　你可能就明白我为什么觉得：</p><p>　【Android 用户，真的可以给 Firefox 一次机会】</p></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/08/firefox-android-advantages.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 22 次 · 离线下载 3 次 · 已有 8 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/8803220530986162097', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!-- GA_START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-WW1SLDPH1Z"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-WW1SLDPH1Z');
+</script>
+<!-- GA_END -->
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" href="/images/fox-header.png">
+<title>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第五篇：Firefox 安装与首次配置</title>
+<style>
+body { max-width: 760px; margin: 40px auto; padding: 0 20px;
+       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       font-size: 18px; line-height: 1.9; color: #222; }
+h1 { font-size: 1.6em; }
+.drop-cap-target::first-letter {
+  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}
+.meta { color: #888; font-size: 0.9em; margin-bottom: 1em; }
+.tags { margin-bottom: 2em; }
+.tags a { display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
+          font-size: 0.85em; color: #555; text-decoration: none; margin-right: 6px; }
+img { max-width: 100%; height: auto; }
+.content pre { white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+audio { width: 100%; }
+a.back { display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }
+.content a[href^="http"]:not([href*="mirror.foxzen.me"]) {
+  color: #1a73e8;
+}
+.content a[href^="http"]:not([href*="mirror.foxzen.me"])::after {
+  content: " 🔗";
+  font-size: 0.85em;
+}
+.video-note { color: #b45309; font-size: 0.85em; }
+.stats-note { color: #999; font-size: 0.85em; margin-top: 2em; padding-top: 1em; border-top: 1px solid #eee; }
+.meta-precise { color: #666; margin-top: -0.5em; margin-bottom: 1em; }
+.discuss-cta { margin-top: 2em; padding: 16px; background: #f7f7f7; border-radius: 8px; text-align: center; }
+.discuss-cta p { margin: 0 0 10px; color: #555; }
+.discuss-btn { display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
+                border-radius: 20px; text-decoration: none; font-size: 0.9em; }
+.discuss-btn:hover { background: #1558b0; }
+</style>
+</head>
+<body>
+<a class="back" href="/" onclick="if (history.length > 1) { history.back(); return false; }">&larr; 返回目录</a>
+<h1>Firefox 隐私加固（ Harden Firefox, Firefox Hardening ）系列第五篇：Firefox 安装与首次配置</h1>
+<div class="meta">发布于 2026-08-05</div>
+<div class="meta-precise">最初发布：2026-08-05 11:30:00 (UTC) · 最后修改：2026-08-07 05:09:00 (UTC) · 全文4062字 · 预计阅读14分钟</div>
+<div class="tags"><a href="/index.html?tag=Arkenfox">#Arkenfox</a><a href="/index.html?tag=Betterfox">#Betterfox</a><a href="/index.html?tag=Firefox">#Firefox</a><a href="/index.html?tag=Firefox Hardening">#Firefox Hardening</a><a href="/index.html?tag=Firefox隐私加固">#Firefox隐私加固</a></div>
+<div class="content"><p>&nbsp; 好了，<a href="https://digatlas.blogspot.com/2026/07/firefox-types-and-forks-connections-and-differences-comparison-with-brave.html" rel="nofollow" target="_blank">本系列上篇博文</a>已经表明我对 Firefox ESR 更青睐。我们现在来说说安装和首次配置。</p><p>&nbsp;</p><h1 style="text-align: left;">&nbsp;&nbsp;</h1><h1 style="text-align: left;">（一）下载</h1><p>&nbsp; 首先，当然最简单的方式是点击之前说的<a href="http://firefox.com" rel="nofollow" target="_blank"> Firefox 官网</a>，点开后，如果你要选择我推荐的 ESR 版，可能需要找到<a href="https://www.firefox.com/zh-CN/download/all/desktop-release/" rel="nofollow" target="_blank">“下载其他语言和平台版本”</a>，或者请你搜索引擎搜索 Firefox ESR 。因为 ESR 版隐藏相对较深。然后选择你要的操作系统版本和语言等。此处第一个<span style="background-color: red;">坑</span>：我建议大家不要直接从官网下载。因为有曾经有消息表明&nbsp;Mozilla 曾在 Firefox 下载流程中引入下载令牌 Download Token（ DLTOKEN ），用于将下载来源与后续安装遥测（ Telemetry ）关联，以分析下载渠道、安装转化率等指标。该机制由于涉及下载行为与安装数据关联，引发了隐私争议。</p><p>&nbsp; 补充背景：<a href="https://mjtsai.com/blog/2022/03/23/firefox-unique-download-identifiers/" rel="nofollow" target="_blank">2022 年，Mozilla 确实在 Firefox 下载体系中引入了下载令牌&nbsp;<b data-end="207" data-start="180">Download Token（DLTOKEN）</b></a>。 Bugzilla （ Mozilla 开发和反馈漏洞平台 ） 中的开发说明写得非常直接："This data will allow us to correlate telemetry IDs with download tokens and Google Analytics IDs."。也就是：<a href="https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/data/install-ping.html" rel="nofollow" target="_blank">利用下载令牌 Download Token，将安装后的遥测 Telemetry 与下载来源、Google Analytics 关联，用于分析下载是否最终变成安装、哪些来源效果最好等</a>。Mozilla 官方 Telemetry 文档也公开写着：<code data-end="570" data-start="502">dltoken: &lt;string&gt; // Unique token created at Firefox download time 。</code>即：<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1677497" rel="nofollow" target="_blank">下载 Firefox 时会生成一个唯一 令牌 Token</a> 。</p><p>&nbsp; &nbsp;这里需要先区分两个概念。<b data-end="711" data-start="683">① Stub Installer（约几百 KB）</b><span data-end="711" data-start="683">；</span>就是官网下载默认那个几百 KB 的联网安装器。它：下载真正安装包、安装结束发送 Install Ping、并参与安装归因流程。安装完成后 Firefox 会发送 Install Ping，其中可能包含下载归因信息，即此令牌。<span data-state="closed"></span></p>
+<hr data-end="853" data-start="850" /><p><b data-end="882" data-start="855">② Full Installer（几十 MB）</b><span data-end="882" data-start="855">；即</span>完整离线安装包。很多人认为它没有下载令牌 Download Token；我刚开始也是这么认为。<b data-end="934" data-start="920">实际上并【不完全】正确。</b>Mozilla 官方源码文档说明：如果 Full Installer 不是由 Stub 启动，也会发送 Install Ping。</p><p>&nbsp; 真正的区别不是：Stub 有令牌 Token，Full 没 Token。而是：<b data-end="1116" data-start="1091">从哪里下载 Full Installer。</b></p><p><b data-end="1116" data-start="1091">&nbsp; </b><span data-end="1116" data-start="1091">所以，</span><b>如果从当时 Mozilla 官网直接下载页面生成的安装流程下载，可能会包含该下载令牌</b><b data-end="1116" data-start="1091">。</b>而：</p><p>（1）官方 FTP / Repository</p><p>（2）第三方镜像（ComputerBase 等）
+</p>
+<p data-end="1333" data-start="1273">&nbsp; <a href="https://www.computerbase.de/news/apps/mozilla-firefox-download-token-dltoken.80008/" rel="nofollow" target="_blank">则不会包含这个令牌</a>。<span data-state="closed"></span></p>
+<p data-end="1359" data-start="1335">&nbsp; 所以后来 PrivacyGuides 也是建议：下载 FTP Repository 里的安装包，而不是最简单的官网下载页生成的下载。</p><p data-end="1359" data-start="1335">&nbsp; 总结：该令牌对用户不可见，也无法在安装前关闭，因此曾引发隐私争议。Mozilla 官方 FTP/Repository 提供的完整安装包则不会包含官网下载流程生成的 Download Token，因此本文建议优先下载官方 FTP / Repository&nbsp;完整离线安装包（Full Installer），避免使用默认联网安装器。&nbsp;</p><p data-end="1359" data-start="1335">&nbsp; 另：鄙人之前测试发现，哪怕是从官网直接下载相同版本的完整（体积更大，大于自动安装器的 500KB ）离线安装包多次下载后散列值 SHA-256 完全一致，说明安装文件本身没有因为下载令牌而产生不同的二进制内容，不存在每次下载都修改安装文件内容的情况。2022 年 Mozilla 曾因刚刚讲解的此机制引发隐私争议，但目前至少就完整离线安装包而言，我未观察到安装程序因下载次数不同而产生不同散列值。不过，<b data-end="1282" data-start="1237">这并【不能】证明 Mozilla 已完全取消下载归因机制，只能说明安装文件本身保持一致</b>。&nbsp;因为可以<b data-end="778" data-start="767">令牌只存在服务器端</b>，下载的网址 URL 或内容分发网络 Content Delivery Network,CDN 请求中携带令牌，安装时再通过网络上传。</p><p data-end="1359" data-start="1335">&nbsp; 所以，因为&nbsp;Mozilla 官方发布目录（Official Release Directory），即&nbsp;<a href="https://ftp.mozilla.org/pub/mozilla.org/firefox/releases/" rel="nofollow" target="_blank">FTP 站点</a>下载【目前】根据公开资料无此令牌，所以我推荐用此站点下载。&nbsp;或者使用 <a href="https://download.cdn.mozilla.net/pub/firefox/releases/" rel="nofollow" target="_blank">Mozilla CDN</a>&nbsp;。根据【目前】公开资料，Mozilla 官方发布目录（历史上称为 FTP，实际通过 HTTPS 提供）中的 Release Installer 不包含官网下载页面生成的此令牌。</p><p data-end="1359" data-start="1335">&nbsp; 大家会发现这个 FTP 站点怎么这么多文件，其实这是正常的，因为包含【所有的】 Firefox 历史版本。而且截至文章推送，我发现最新 ESR 居然在接近页面中间。为什么这么麻烦，不是人直觉的越往下版本越新哈哈？会不会是我说的 Mozilla 想尽量麻烦你，追踪你，这个方法不好追踪你？ Claude ：<b>根本原因：这个目录是按字符串字典序（alphabetical）排列的，不是按版本号数值大小或时间顺序排列的。</b></p>
+<p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 版本号是字符串比较，不是数字比较。比如 "140.10.2 esr " 和 "99.0" 比较时，程序看的是第一个字符 "1" vs "9"，"1" 在字典序上小于 "9"，所以 140.x 会排在 99.x 前面——尽管数值上 140 明明比 99 大。你截图里滚动条停在中间、显示的正是 140.x 系列，而不是排在更靠后的、数值更小的 99.x，就是这个原理造成的。同理，最上面是 0.x、1.x 这些个位数版本号，也是同样的字符串排序逻辑。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 所以，我和 Claude 认为最快的方式是：</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">1、打开 Firefox ESR 官方下载页（或 Mozilla 的<a class="underline underline underline-offset-2 decoration-1 decoration-current/40 hover:decoration-current focus:decoration-current" href="https://www.mozilla.org/en-US/firefox/organizations/notes/" rel="nofollow" target="_blank">发行说明页</a>，很抱歉，没中文），记下当前 ESR 版本号（如 140.10.2esr）。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">2、打开 <code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">https://ftp.mozilla.org/pub/firefox/releases/</code>&nbsp;，Ctrl+F 搜索这个版本号。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">3、进入对应版本目录后，再按系统（如 win64）→ 语言（如 zh-CN）逐层进入，找到 Full Installer 下载。</p><p class="font-claude-response-body break-words whitespace-normal" dir="ltr">&nbsp; 当然你可以校验散列值等证明内容完整性等。页面上都有。</p><div class="separator" style="clear: both; text-align: center;"><a href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEhfHbQ4mZvUgvb8j2WBOZeBUnULSN9VibqGqpGfeyfes2xEYxKxYj4QU_de68AgymXkH2s1U-dUdwVt6OHPGqas_Pzkvv53FFHeZnHMSTgJtU2KoLDc8kSCRT1mZRa6uSlM4kaZlPYLdCN_HhClbJGFi9t_Rxp4vr5b84t0yCrZjVjdd6h-x_zxlq33JbMw/s1907/screenshot-1785902037476.png" style="margin-left: 1em; margin-right: 1em;"><img border="0" data-original-height="846" data-original-width="1907" src="/posts/3919949927086609529/media/516ce0fabf4c.png" /></a></div><br /><br /><p></p><br />&nbsp;<p></p><p data-end="1359" data-start="1335">&nbsp;</p><p data-end="1359" data-start="1335">&nbsp;</p><h1 data-end="1359" data-start="1335" style="text-align: left;">（二）安装</h1><p data-end="1359" data-start="1335" style="text-align: left;">&nbsp; 好，下载后开始安装。这里讲第二个坑，但可能是我未配置完善，所以可能这个坑不存在：我曾经因为不喜欢软件堆在默认位置系统盘 C 盘占用空间，所以安装到其他盘。但是问题是当我想用（后面篇章想要具体讲述的）企业策略文件 policies.json （以下简称“策略”或“策略文件”）加固 Firefox 的时候，似乎策略未生效。我和 Gemini 反复尝试后未生效，卸载后直接默认安装方式，安装到 C 盘后一次生效。总结来说，当时我的观察是：默认安装到 C 盘后策略生效，而安装到其他磁盘时未生效。</p><p><b data-end="1116" data-start="1091">&nbsp;</b>ChatGPT 认为是我找错了安装目录、未放置在正确地方，由于很多原因，例如自定义安装路径、多版本共存、快捷方式指向错误等情况容易导致目录判断错误。但是我记得那时候我只下载了一个 Firefox ，且点击安装目录里的 firefox.exe 启动是我用的实例。我通过 about:profiles 找到安装目录并且将 policies.json 文件放入安装目录的&nbsp;distribution 文件夹。但是就是不生效。我不知道原因，可能也是我放错位置了，也可能目前有改进。供大家参考。如果有人能实测告诉我那太好了。</p><p>&nbsp; 所以，这里提醒大家第三个坑：&nbsp;安装目录的&nbsp;distribution 文件夹默认不存在，请新建并放入 policies.json 文件。且此策略文件会对【此安装目录下】所有 Firefox 实例均生效，即为全局的。而且权限高于 Firefox 用户图形界面和后面篇章要讲的 about:config 、 user.js 修改。而且，可以通过 Firefox 地址栏输入 <code data-end="1166" data-start="1150">about:policies</code>&nbsp;、回车进入检查策略是否加载。这是最简单的验证是否生效的方式。</p><p>&nbsp;</p><p><strong>&nbsp; 勘误、修订（2026-08-06 补充）：</strong>此前我在此第五篇提到,自定义安装路径（非 C 盘默认路径）下 <code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">policies.json</code> 疑似未生效，当时怀疑是路径本身的问题，但未能确定原因。近期重新测试：全新安装到 E 盘，将 <code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">policies.json</code> 放入安装目录下的 <code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">distribution</code> 文件夹，<code class="bg-text-200/5 border border-0.5 border-border-300 text-danger-000 whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]">about:policies</code> 确认策略正常生效。因此,此前的现象大概率是我当时的操作失误或者软件漏洞（具体原因已不可考），<strong>并非自定义安装路径导致策略失效的普遍问题</strong>,，特此更正，避免误导。&nbsp;</p><p>&nbsp;</p><p>&nbsp;</p><p>&nbsp;</p><p>&nbsp; 欢迎批评指正、完善&nbsp;</p><p>&nbsp;</p><p>&nbsp; &nbsp;</p></div>
+<div class="discuss-cta">
+  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="https://digatlas.blogspot.com/2026/08/firefox-installation-and-initial-configuration.html" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+</div>
+
+<div class="stats-note">本文镜像页浏览 98 次 · 离线下载 3 次 · 已有 26 人读完</div>
+<!-- FINISH_READ_START -->
+<style>
+.finish-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #333; color: #fff; padding: 10px 20px; border-radius: 20px;
+  font-size: 0.9em; opacity: 0; transition: opacity .4s, transform .4s; pointer-events: none; z-index: 999;
+}
+.finish-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.confetti-piece {
+  position: fixed; top: -10px; width: 8px; height: 8px; pointer-events: none; z-index: 998;
+  animation: confetti-fall 1.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+</style>
+<div id="finish-sentinel"></div>
+<script>
+(function () {
+  var sentinel = document.getElementById('finish-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  var fired = false;
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !fired) {
+        fired = true;
+        obs.disconnect();
+        celebrate();
+        fetch('/api/finish-read/3919949927086609529', { method: 'POST' }).catch(function () {});
+      }
+    });
+  }, { threshold: 0.1 });
+  obs.observe(sentinel);
+
+  function celebrate() {
+    var colors = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#e67e22'];
+    for (var i = 0; i < 24; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      p.style.left = (Math.random() * 100) + 'vw';
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      document.body.appendChild(p);
+      (function (el) { setTimeout(function () { el.remove(); }, 2200); })(p);
+    }
+    var toast = document.createElement('div');
+    toast.className = 'finish-toast';
+    toast.textContent = '🎉 谢谢你读完了';
+    document.body.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add('show'); });
+    setTimeout(function () {
+      toast.classList.remove('show');
+      setTimeout(function () { toast.remove(); }, 500);
+    }, 2500);
+  }
+})();
+</script>
+<!-- FINISH_READ_END -->
+<style>
+.code-copy-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: #444; color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; font-size: 0.8em; cursor: pointer; opacity: 0.7;
+}
+.code-copy-btn:hover { opacity: 1; }
+.code-copy-btn.copied { background: #2ecc71; }
+</style>
+<script>
+(function () {
+  var blocks = document.querySelectorAll('.content pre');
+  blocks.forEach(function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'code-copy-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = function () {
+      var text = pre.innerText;
+
+      function showCopied() {
+        btn.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+
+      function fallbackCopy() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showCopied(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+    wrap.appendChild(btn);
+  });
+})();
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<style>
+.content pre code .fb-comment { color: #6a737d; font-style: italic; }
+.content pre code .fb-string { color: #22863a; }
+.content pre code .fb-number { color: #005cc5; }
+</style>
+<script>
+window.__fallbackHighlight = function () {
+  document.querySelectorAll('.content pre code').forEach(function (block) {
+    var text = block.textContent;
+    var escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    escaped = escaped.replace(
+      /(#.*$|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b/gm,
+      function (m, comment, str, num) {
+        if (comment) return '<span class="fb-comment">' + comment + '</span>';
+        if (str) return '<span class="fb-string">' + str + '</span>';
+        if (num) return '<span class="fb-number">' + num + '</span>';
+        return m;
+      }
+    );
+    block.innerHTML = escaped;
+  });
+};
+</script>
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+  onload="if (window.hljs) { hljs.highlightAll(); }"
+  onerror="window.__fallbackHighlight();"
+></script>
+<script>
+document.querySelectorAll('.content a[href^="http"]:not([href*="mirror.foxzen.me"])').forEach(function (a) {
+  a.target = '_blank';
+  a.rel = 'noopener';
+});
+</script>
+</body>
+</html>

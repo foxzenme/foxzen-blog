@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="UTF-8"><title>刷新缓存</title></head>
+<body style="font-family:-apple-system,sans-serif;max-width:400px;margin:100px auto;text-align:center;">
+<h2>刷新 Hetzner 缓存</h2>
+<button onclick="refresh()" style="font-size:1.2em;padding:10px 20px;">立即刷新</button>
+<p id="result"></p>
+<script>
+async function refresh() {
+  document.getElementById('result').innerText = '刷新中...';
+  try {
+    const res = await fetch('/refresh-cache', { method: 'POST' });
+    const data = await res.json();
+    document.getElementById('result').innerText = data.result ? '成功' : JSON.stringify(data);
+  } catch(e) {
+    document.getElementById('result').innerText = '失败: ' + e;
+  }
+}
+</script>
+</body>
+</html>

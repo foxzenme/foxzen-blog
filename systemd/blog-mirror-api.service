@@ -1,0 +1,25 @@
+[Unit]
+
+Description=blog-mirror Flask API
+
+After=network.target
+
+[Service]
+
+Type=simple
+
+User=root
+
+WorkingDirectory=/root/blog-mirror
+
+Environment="TG_BOT_TOKEN=REDACTED"
+
+Environment="TG_CHAT_ID=REDACTED"
+
+ExecStart=/root/blog-mirror/venv/bin/gunicorn -w 2 -b 172.17.0.1:5000 app:app
+
+Restart=on-failure
+
+[Install]
+
+WantedBy=multi-user.target

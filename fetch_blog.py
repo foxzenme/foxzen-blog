@@ -587,7 +587,6 @@ li {{ margin-bottom: 1em; }}
 </div>
 
 <div class="archive-note">
-本博客已入驻爱发电：<a href="https://afdian.com/a/foxzen" target="_blank" rel="noopener">afdian.com/a/foxzen</a> · Patreon：<a href="https://patreon.com/cw/foxzen" target="_blank" rel="noopener">patreon.com/cw/foxzen</a><br>
 联系邮箱：<a href="mailto:foxzenme@gmail.com">foxzenme@gmail.com</a>（注意：<b>foxzen@gmail.com 不是我</b>，请勿误认）
 </div>
 
@@ -597,10 +596,6 @@ li {{ margin-bottom: 1em; }}
 如果你是一名预算非常有限的独立开发者，确实需要一些推广，但无力承担商业广告费用，欢迎<a href="mailto:foxzenme@gmail.com">直接联系我</a>。我可以在实际试用你的产品后，根据自己的真实体验决定是否推荐。<br>
 推荐不能购买，赞助也不会获得推荐权限。<br>
 我最终推荐与否，只取决于产品本身是否值得让读者知道。
-</div>
-
-<div class="archive-note">
-加入爱发电和Patreon，付费也是无特权的，像 <a href="https://waitbutwhy.com" target="_blank" rel="noopener">WaitButWhy</a> 一样让我活下去。WBW也是我最喜欢的博客之一。
 </div>
 
 <div class="stats-box">

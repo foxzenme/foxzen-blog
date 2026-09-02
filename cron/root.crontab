@@ -8,4 +8,5 @@ IA_SECRET_KEY=REDACTED
 
 0 3 * * * cd /root/blog-mirror && TG_BOT_TOKEN="REDACTED" TG_CHAT_ID="REDACTED" /root/blog-mirror/venv/bin/python3 backup_to_hetzner.py >> /root/blog-mirror/backup.log 2>&1
 
-0 4 * * * cd /root/blog-mirror && /root/blog-mirror/venv/bin/python3 archive_submit.py >> /root/blog-mirror/archive.log 2>&1
+# 已于 2026-09-02 停用：不再向 Internet Archive / Wayback Machine 自动提交，脚本本身保留待需要时手动启用
+# 0 4 * * * cd /root/blog-mirror && /root/blog-mirror/venv/bin/python3 archive_submit.py >> /root/blog-mirror/archive.log 2>&1

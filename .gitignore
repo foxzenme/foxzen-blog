@@ -50,3 +50,7 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+### 项目运行时产物（不应提交，见 zip_cache.py / generate_status_page.py 的说明）
+data/zip_cache/
+static_status/

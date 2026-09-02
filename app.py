@@ -19,6 +19,7 @@ Flask后端。本版起，nginx不再直接serve文章页/首页/短号——这
 - GET  /api/health                    健康检查
 """
 import base64
+import calendar
 import html as html_lib
 import io
 import json
@@ -36,9 +37,11 @@ from threading import Lock
 from flask import Flask, request, jsonify, send_file, Response, abort, redirect
 
 import db
+import zip_cache
 from telegram_notify import notify
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+zip_cache.start_cleanup_thread()
 
 BASE_DIR = Path(__file__).parent
 HTML_DIR = BASE_DIR / "html"
@@ -212,12 +215,44 @@ def finish_read(post_id):
     return jsonify({"ok": True, "count": db.get_post_finish_read_count(post_id)})
 
 
+def _year_month_range(year, month=None):
+    """年份/月份筛选转成date_from/date_to，复用search_posts已有的日期范围过滤，
+    不新增查询分支。year/month非法（不是数字、月份超出1-12）时返回(None, None)，
+    调用方据此当作"没有筛选"处理，不因为一个坏参数就让整个接口报错。
+    """
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return None, None
+    if month is None or month == "":
+        return f"{year:04d}-01-01", f"{year:04d}-12-31"
+    try:
+        month = int(month)
+    except (TypeError, ValueError):
+        return None, None
+    if not 1 <= month <= 12:
+        return None, None
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last_day:02d}"
+
+
+@app.route("/api/archive", methods=["GET"])
+def archive_index():
+    """按年/月列出文章数量，供前端渲染年份/月份筛选下拉框。"""
+    return jsonify({"years": db.get_archive_index()})
+
+
 @app.route("/api/search", methods=["GET"])
 def search():
     query = request.args.get("q", "")
     tag = request.args.get("tag") or None
     date_from = request.args.get("from") or None
     date_to = request.args.get("to") or None
+
+    year = request.args.get("year") or None
+    month = request.args.get("month") or None
+    if year and not (date_from or date_to):
+        date_from, date_to = _year_month_range(year, month)
 
     # 每页篇数：读者可以自己选，但服务端强制不超过20篇，不信任前端传来的数字
     try:
@@ -273,22 +308,76 @@ def _zip_posts(post_ids):
 
 @app.route("/api/download/all", methods=["GET"])
 def download_all():
-    all_posts = db.get_all_posts()
-    post_ids = [p["post_id"] for p in all_posts]
-    buf = _zip_posts(post_ids)
+    """整站完整ZIP走磁盘缓存（zip_cache.py），不再每次请求都现场压缩。
+    单卷时保持旧行为：直接把zip文件内容返回给浏览器，文件名不变，前端下载按钮
+    不需要改。超过安全阈值需要分卷时，没有"一个URL对应完整博客"这回事了，
+    改为返回manifest JSON，前端后续需要相应展示"分为N个压缩包"（本次未实现，
+    见部署说明）。
+    """
+    try:
+        state = zip_cache.get_or_build()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    zip_cache.touch_last_used()
+
     db.record_download(None, scope="site")
-    for pid in post_ids:
-        db.record_download(pid, scope="article")
-    return send_file(buf, mimetype="application/zip", as_attachment=True,
-                      download_name="blog-mirror-full.zip")
+    for p in db.get_all_posts():
+        db.record_download(p["post_id"], scope="article")
+
+    parts = state["parts"]
+    if len(parts) == 1:
+        path = zip_cache.resolve_part_path(parts[0]["name"])
+        if not path:
+            return jsonify({"error": "缓存文件意外丢失，请重试"}), 503
+        return send_file(str(path), mimetype="application/zip", as_attachment=True,
+                          download_name="blog-mirror-full.zip")
+
+    return jsonify({
+        "multipart": True,
+        "version": state["version"],
+        "message": f"完整博客分为 {len(parts)} 个压缩包",
+        "parts": [{"name": p["name"], "size": p["size"], "url": f"/download/{p['name']}"}
+                   for p in parts],
+    })
+
+
+@app.route("/api/download/manifest", methods=["GET"])
+def download_manifest():
+    """给前端/运维查询当前完整博客ZIP的缓存状态，不触发下载计数。"""
+    try:
+        state = zip_cache.get_or_build()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    parts = state["parts"]
+    return jsonify({
+        "version": state["version"],
+        "multipart": len(parts) > 1,
+        "generated_at": state["generated_at"],
+        "parts": [{"name": p["name"], "size": p["size"],
+                   "url": f"/download/{p['name']}" if len(parts) > 1 else "/api/download/all"}
+                  for p in parts],
+    })
+
+
+@app.route("/download/<name>", methods=["GET"])
+def download_zip_part(name):
+    """版本化、可被Cloudflare按URL缓存的下载地址，例如 blog-v1a2b3c4d5e6.zip。
+    只允许取当前state.json里登记过的文件名，防止路径穿越或拿到已清理的旧版本文件。
+    """
+    path = zip_cache.resolve_part_path(name)
+    if not path:
+        abort(404)
+    zip_cache.touch_last_used()
+    return send_file(str(path), mimetype="application/zip", as_attachment=True,
+                      download_name=name)
 
 
 @app.route("/api/download/selected", methods=["POST"])
 def download_selected():
     body = request.get_json(silent=True) or {}
-    post_ids = body.get("post_ids", [])
+    post_ids = body.get("post_ids") or _resolve_scope(body)
     if not post_ids:
-        return jsonify({"error": "post_ids不能为空"}), 400
+        return jsonify({"error": "post_ids不能为空，或year/month/tag筛选条件未匹配到文章"}), 400
     buf = _zip_posts(post_ids)
     for pid in post_ids:
         db.record_download(pid, scope="article")
@@ -406,6 +495,12 @@ def _inline_post_as_base64(post_id: str) -> str | None:
 def _resolve_scope(body: dict):
     if body.get("post_ids"):
         return list(body["post_ids"])
+    if body.get("year"):
+        date_from, date_to = _year_month_range(body.get("year"), body.get("month"))
+        if date_from is None:
+            return []
+        return [p["post_id"] for p in db.search_posts(tag=body.get("tag"), date_from=date_from,
+                                                        date_to=date_to, limit=10000)]
     if body.get("tag"):
         return [p["post_id"] for p in db.search_posts(tag=body["tag"], limit=10000)]
     if body.get("all"):

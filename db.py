@@ -411,6 +411,35 @@ def get_all_posts():
               "canonical_path": r["canonical_path"]} for r in rows]
 
 
+def get_archive_index():
+    """按年/月统计文章数，供前端做年份/月份筛选下拉框用。
+    直接用SQL的substr(published, 1, 4)/substr(published, 6, 2)分组，published是
+    fetch_blog.py写入的ISO格式日期字符串（年月日都是零填充定长），substr切片安全。
+    """
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT substr(p.published, 1, 4) AS year,
+               substr(p.published, 6, 2) AS month,
+               COUNT(*) AS c
+        FROM posts p
+        WHERE p.published IS NOT NULL AND p.published != ''
+        GROUP BY year, month
+        ORDER BY year DESC, month DESC
+    """).fetchall()
+    conn.close()
+
+    years = {}
+    for r in rows:
+        y, m, c = r["year"], r["month"], r["c"]
+        if not y or not m:
+            continue
+        entry = years.setdefault(y, {"year": int(y), "count": 0, "months": []})
+        entry["count"] += c
+        entry["months"].append({"month": int(m), "count": c})
+
+    return sorted(years.values(), key=lambda e: e["year"], reverse=True)
+
+
 def log_fetch_start():
     conn = get_conn()
     now = datetime.now().isoformat(timespec="seconds")

@@ -411,6 +411,33 @@ def get_all_posts():
               "canonical_path": r["canonical_path"]} for r in rows]
 
 
+def get_all_permalinks():
+    """返回 {Blogger permalink: 本站当前应该用的根相对地址} 映射，只给Flask
+    响应层改写文章正文里"引用本站另一篇文章"的Blogger链接用（见internal_links.py）。
+    地址优先级跟fetch_blog.py的_href_for()保持一致：canonical_path > 短号 > post_id，
+    避免两处出现不一致的判断逻辑。这个映射只在内存里用一次，不写回任何文件。
+    """
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT p.post_id, p.source_url, p.canonical_path, n.number
+        FROM posts p
+        LEFT JOIN post_numbers n ON n.post_id = p.post_id
+    """).fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        if not r["source_url"]:
+            continue
+        if r["canonical_path"]:
+            url = f"/{r['canonical_path']}.html"
+        elif r["number"]:
+            url = f"/{r['number']}/"
+        else:
+            url = f"/posts/{r['post_id']}/"
+        result[r["source_url"]] = url
+    return result
+
+
 def get_archive_index():
     """按年/月统计文章数，供前端做年份/月份筛选下拉框用。
     直接用SQL的substr(published, 1, 4)/substr(published, 6, 2)分组，published是

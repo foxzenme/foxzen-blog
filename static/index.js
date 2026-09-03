@@ -97,7 +97,7 @@
       // 优先用canonical_path（年/月/slug格式的正式地址），没有才退回短号/旧路径
       const href = p.canonical_path ? `/${p.canonical_path}.html`
         : (p.number ? `/${p.number}/` : `/posts/${p.post_id}/`);
-      const link = el("a", { href, text: p.title });
+      const link = el("a", { href, text: p.title, target: "_blank", rel: "noopener" });
       const tagsHtml = (p.tags || []).map((t) => `#${t}`).join(" ");
       const dateText = ` ${p.published} ${tagsHtml}`;
       const statsText = `· 浏览${p.click_count || 0}次 · 下载${p.download_count || 0}次 · 离线版${humanSize(p.export_size_bytes)} · 完读${p.finish_read_count || 0}次`;

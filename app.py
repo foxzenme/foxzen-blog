@@ -38,6 +38,7 @@ from flask import Flask, request, jsonify, send_file, Response, abort, redirect
 
 import db
 import zip_cache
+from internal_links import rewrite_internal_links
 from telegram_notify import notify
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -137,6 +138,23 @@ def easter_egg_404():
     return Response(html, mimetype="text/html")
 
 
+def _serve_post_response(post_id: str, raw_html: str) -> Response:
+    """mirror/backup共用的文章响应生成：把正文里"引用本站另一篇文章"的Blogger
+    permalink改写成本站根相对地址，再记一次访问。改写只产出不带协议/域名的
+    相对路径，不需要也不判断request.host——浏览器天然按当前访问的域名解析，
+    mirror请求留在mirror，backup请求留在backup（见internal_links.py）。
+
+    只用read_text()读到的文本做内存改写，磁盘上的html/posts/<post_id>/index.html
+    本身不会被修改——_inline_post_as_base64()读到的仍是原始Blogger链接，离线
+    下载/导出功能不受影响。
+    """
+    permalink_to_url = db.get_all_permalinks()
+    own_permalink = db.get_source_url(post_id)
+    html_text = rewrite_internal_links(raw_html, permalink_to_url, own_permalink)
+    db.record_page_hit(post_id, visitor_key=_visitor_ip())
+    return Response(html_text, mimetype="text/html")
+
+
 @app.route("/posts/<post_id>/", methods=["GET"])
 @app.route("/posts/<post_id>/index.html", methods=["GET"])
 def legacy_post_link(post_id):
@@ -147,8 +165,7 @@ def legacy_post_link(post_id):
     index_file = post_dir / "index.html"
     if not index_file.exists():
         abort(404)
-    db.record_page_hit(post_id, visitor_key=_visitor_ip())
-    return Response(index_file.read_text(encoding="utf-8"), mimetype="text/html")
+    return _serve_post_response(post_id, index_file.read_text(encoding="utf-8"))
 
 
 @app.route("/<int:year>/<int:month>/<slug>.html", methods=["GET"])
@@ -160,8 +177,7 @@ def canonical_post_page(year, month, slug):
     index_file = POSTS_DIR / post["post_id"] / "index.html"
     if not index_file.exists():
         abort(404)
-    db.record_page_hit(post["post_id"], visitor_key=_visitor_ip())
-    return Response(index_file.read_text(encoding="utf-8"), mimetype="text/html")
+    return _serve_post_response(post["post_id"], index_file.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

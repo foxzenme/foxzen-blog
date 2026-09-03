@@ -100,7 +100,7 @@
     items.forEach(function (a) {
       var tagsText = (a.tags || []).map(function (t) { return "#" + t; }).join(" ");
       var li = el("li", null, [
-        el("a", { href: a.url, text: a.title }),
+        el("a", { href: a.url, text: a.title, target: "_blank", rel: "noopener" }),
         el("span", { class: "date", text: " " + humanDate(a.date) + " " + tagsText }),
       ]);
       ul.appendChild(li);

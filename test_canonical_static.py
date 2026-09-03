@@ -130,9 +130,23 @@ def test_app_dynamic_routes_untouched():
 
 def test_real_db_sample_canonical_path_resolves_correctly():
     """用真实data/blog.db做只读抽样（不写入、不复制整份数据库），确认现有
-    真实canonical_path数据能被正确转换成静态路径。"""
+    真实canonical_path数据能被正确转换成静态路径。
+
+    这个测试要同时兼容两种环境：
+    1. 本地开发环境：data/blog.db是真实生产数据库，posts表里有带
+       canonical_path的真实文章——这种情况下必须真正执行下面的解析验证，
+       不能因为"支持CI"就顺便把本地的真实验证也弱化掉。
+    2. CI环境（GitHub Actions）：CI不应该也不会拿到生产数据库，pages.yml
+       里只用项目自带的db.init_db()建一份空schema（见.github/workflows/
+       pages.yml的说明）——这种情况下data/blog.db这个文件本身是存在的
+       （sqlite3.connect会自动建文件），posts表也存在，但里面没有任何
+       真实文章行。区分"文件不存在"和"文件存在但没有真实样本"很重要：
+       只判断文件是否存在不够，还要在查询后发现"一条真实样本都没有"时
+       同样按SKIP处理，而不是断言"必须至少有一条"从而在CI里失败——
+       CI里没有真实数据本来就是设计上的预期状态，不是bug。
+    """
     if not REAL_DB.exists():
-        print("  [SKIP] 未找到 data/blog.db，跳过真实数据抽样检查")
+        print("  [SKIP] 未找到 data/blog.db，跳过真实DB canonical_path验证")
         return
 
     def _run(tmp):
@@ -145,7 +159,11 @@ def test_real_db_sample_canonical_path_resolves_correctly():
             ).fetchall()
         finally:
             conn.close()
-        check("真实DB里至少存在一条带canonical_path的文章样本", len(rows) > 0)
+
+        if not rows:
+            print("  [SKIP] 当前环境没有真实数据库文章样本，跳过真实DB canonical_path验证")
+            return
+
         for row in rows:
             target = fetch_blog.canonical_static_target(row["canonical_path"])
             year, month, slug = row["canonical_path"].split("/")

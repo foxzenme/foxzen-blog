@@ -121,6 +121,63 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
     return output_dir
 
 
+class PublishVerificationError(RuntimeError):
+    """publish/产物没有通过安全/完整性检查时抛出，携带全部发现的问题
+    （不是只报第一个），方便本地和CI一次性看到所有需要修的地方。"""
+
+
+_DANGEROUS_SUFFIXES = (
+    ".db", ".sqlite", ".sqlite3", ".env", ".pem",
+    ".key", ".p12", ".pfx", ".secret", ".token", ".py",
+)
+_DANGEROUS_NAMES = {"id_rsa", "id_ed25519", "foxzen-download-admin.html"}
+_REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME")
+
+
+def verify_publish(output_dir: Path, host: str) -> None:
+    """对已经构建好的publish/做一次面向路径名的安全/完整性检查，在打包成
+    Pages artifact之前拦截问题——不依赖人工目视检查一遍文件列表。
+
+    这里只做"文件名/路径名"层面的检查（危险后缀、必需文件是否存在、
+    hostname是否正确），不检查文章正文内容——文章正文里出现password/token
+    这类技术词汇是正常内容，不该被当成危险信号（区分见test_publish_build.py
+    里 test_article_body_with_password_token_words_not_treated_as_secret）。
+    """
+    errors = []
+
+    for name in _REQUIRED_FILES:
+        if not (output_dir / name).exists():
+            errors.append(f"缺少必需文件: {name}")
+
+    if (output_dir / "data").exists():
+        errors.append("存在不应出现的 data/ 目录")
+
+    has_article = any((output_dir / "posts").glob("*/index.html")) or any(
+        re.match(r"^\d{4}$", d.name) for d in output_dir.iterdir() if d.is_dir()
+    )
+    if not has_article:
+        errors.append("没有找到任何文章静态HTML（posts/<id>/index.html 或 YYYY/MM/slug.html）")
+
+    for p in output_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix in _DANGEROUS_SUFFIXES or p.name in _DANGEROUS_NAMES:
+            errors.append(f"发现危险文件: {p.relative_to(output_dir)}")
+
+    for name in ("robots.txt", "sitemap.xml", "CNAME"):
+        f = output_dir / name
+        if not f.exists():
+            continue
+        text = f.read_text(encoding="utf-8")
+        if MIRROR_ROOT_URL in text:
+            errors.append(f"{name} 仍然包含 mirror.foxzen.me，未正确替换为 {host}")
+        if name != "CNAME" and host not in text:
+            errors.append(f"{name} 没有包含目标hostname {host}")
+
+    if errors:
+        raise PublishVerificationError("；".join(errors))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, help="目标Pages域名，例如 github.foxzen.me 或 cf.foxzen.me")
@@ -128,8 +185,9 @@ def main():
     args = parser.parse_args()
 
     output_dir = build_publish(args.host, Path(args.output))
+    verify_publish(output_dir, args.host)
     file_count = sum(1 for _ in output_dir.rglob("*") if _.is_file())
-    print(f"已构建 {output_dir}（host={args.host}，共{file_count}个文件）")
+    print(f"已构建并通过安全检查 {output_dir}（host={args.host}，共{file_count}个文件）")
 
 
 if __name__ == "__main__":

@@ -221,6 +221,61 @@ def test_article_body_with_password_token_words_not_treated_as_secret():
     with_fixture(_run)
 
 
+def test_verify_publish_passes_on_good_build():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+            ok = True
+        except publish_build.PublishVerificationError as e:
+            ok = False
+            print(f"    unexpected error: {e}")
+        check("正常构建的publish/能通过verify_publish()检查", ok)
+    with_fixture(_run)
+
+
+def test_verify_publish_catches_injected_danger_file():
+    """人为在构建产物里塞一个不该出现的.db文件，确认verify_publish()会
+    识别出来并抛出异常——这是CI在upload artifact前的最后一道防线。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        (out / "data").mkdir()
+        (out / "data" / "blog.db").write_bytes(b"not a real db, just a test probe")
+        raised = False
+        message = ""
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+        except publish_build.PublishVerificationError as e:
+            raised = True
+            message = str(e)
+        check("verify_publish()识别出被注入的data/blog.db并拒绝通过", raised)
+        check("错误信息里提到data/目录", "data/" in message)
+    with_fixture(_run)
+
+
+def test_verify_publish_catches_wrong_hostname():
+    """如果sitemap.xml因为某种原因没有正确替换hostname，verify_publish()
+    应该拦下来，而不是让一份还写着mirror.foxzen.me的产物被当成github.foxzen.me
+    的正式内容发布出去。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        sitemap = out / "sitemap.xml"
+        sitemap.write_text(
+            sitemap.read_text(encoding="utf-8").replace("github.foxzen.me", "mirror.foxzen.me"),
+            encoding="utf-8",
+        )
+        raised = False
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+        except publish_build.PublishVerificationError:
+            raised = True
+        check("verify_publish()识别出未正确替换hostname的sitemap.xml", raised)
+    with_fixture(_run)
+
+
 def test_build_is_repeatable():
     """同样的html/输入 + 同样的host，重复构建两次应该得到完全相同的产物
     （不依赖当前时间、访问统计等易变状态）。"""
@@ -302,6 +357,9 @@ def main():
         test_same_builder_same_output_structure_for_both_hosts,
         test_index_js_removed_but_fallback_content_kept,
         test_article_body_with_password_token_words_not_treated_as_secret,
+        test_verify_publish_passes_on_good_build,
+        test_verify_publish_catches_injected_danger_file,
+        test_verify_publish_catches_wrong_hostname,
         test_build_is_repeatable,
         test_no_unexpected_db_or_secret_file_anywhere_in_output,
         test_output_dir_is_rebuilt_not_appended,

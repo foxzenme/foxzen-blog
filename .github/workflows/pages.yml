@@ -1,0 +1,74 @@
+name: Deploy GitHub Pages
+
+# 第一版先只允许手动触发（workflow_dispatch），不挂 push 自动触发——
+# 目的是让第一次真正的 Pages 部署由人明确点一下"Run workflow"来确认，
+# 而不是这个文件一 push 上去就自动跑一次线上部署。
+# 确认整个流程稳定之后，可以再单独加一个 push 触发器。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 避免同一时间有两次部署互相竞争覆盖，同一时刻只让最新的一次继续，
+# 但不取消正在部署中的旧任务，避免半途而废产生不完整的Pages内容。
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # test_canonical_static.py / test_site_entries.py 都会经由 fetch_blog.py
+      # 间接触发 db.get_conn() 查询 posts 等表；CI runner 上没有生产
+      # data/blog.db（也绝不应该有——见仓库Git历史安全审计），这里只调用项目
+      # 已有的 db.init_db() 建一份空schema的SQLite数据库，不复制、不需要任何
+      # 真实文章/访客数据，测试里依赖真实数据的用例会自行判断数据不存在并跳过。
+      - name: Initialize empty database schema for tests
+        run: python -c "import db; db.init_db()"
+
+      - name: Run test suite
+        run: |
+          python test_canonical_static.py
+          python test_site_entries.py
+          python test_publish_build.py
+
+      # publish_build.py 现场从本次checkout的html/生成publish/，产物本身
+      # 从不提交进Git（见.gitignore的/publish/规则），也不依赖任何本地机器
+      # 或VPS生成的旧版本。verify_publish()在这一步内部自动执行，构建产物
+      # 一旦不满足安全/完整性要求，这一步会直接失败，不会继续往下走。
+      - name: Build publish/ for github.foxzen.me
+        run: python publish_build.py --host github.foxzen.me
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: publish/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

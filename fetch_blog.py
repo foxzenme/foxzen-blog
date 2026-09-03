@@ -419,8 +419,41 @@ def _reading_stats(content_html: str) -> str:
     return f"全文{char_count}字 · 预计阅读{minutes}分钟"
 
 
+def canonical_static_target(canonical_path):
+    """把 'YYYY/MM/slug' 形式的canonical_path转成 html/YYYY/MM/slug.html 的目标路径。
+
+    canonical_path静态化的目的是让 GitHub Pages 这类纯静态托管上，规范URL
+    （/YYYY/MM/slug.html，目前只由 app.py 的 canonical_post_page 动态路由提供）
+    也能对应一个真实存在的文件，不必依赖Flask（第十六节静态灾备的前置条件）。
+
+    格式校验规则跟 parse_canonical_path/canonical_post_page 保持一致（年4位数字、
+    月2位数字），额外用resolve()二次确认落点确实在HTML_DIR内部——即使上游正则
+    出错或以后被改坏，这里也不会因为一个畸形的canonical_path值写到HTML_DIR外面。
+    格式不对返回None，调用方跳过静态文件生成，不中断主流程。
+    """
+    if not canonical_path:
+        return None
+    parts = canonical_path.split("/")
+    if len(parts) != 3:
+        return None
+    year, month, slug = parts
+    if not (len(year) == 4 and year.isdigit()):
+        return None
+    if not (len(month) == 2 and month.isdigit()):
+        return None
+    if not slug or "/" in slug:
+        return None
+    target = (HTML_DIR / year / month / f"{slug}.html").resolve()
+    try:
+        target.relative_to(HTML_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
 def render_post(post_id, title, published, tags, content_html, click_count=0, download_count=0,
-                 published_ts=None, updated_ts=None, finish_read_count=0, source_url=None):
+                 published_ts=None, updated_ts=None, finish_read_count=0, source_url=None,
+                 canonical_path=None):
     tags_html = "".join(f'<a href="/index.html?tag={t}">#{t}</a>' for t in tags)
     html = POST_TEMPLATE.format(
         title=title, published=published, tags_html=tags_html, content=content_html,
@@ -434,6 +467,14 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
     post_dir = POSTS_DIR / post_id
     post_dir.mkdir(parents=True, exist_ok=True)
     (post_dir / "index.html").write_text(html, encoding="utf-8")
+
+    static_target = canonical_static_target(canonical_path)
+    if static_target is None:
+        if canonical_path:
+            print(f"  [警告] canonical_path格式不对，跳过静态化: {canonical_path!r}")
+    else:
+        static_target.parent.mkdir(parents=True, exist_ok=True)
+        static_target.write_text(html, encoding="utf-8")
 
 
 def main():
@@ -504,14 +545,15 @@ def main():
     for e in entries:
         post_id = slugify(e["id"]["$t"])
         conn = db.get_conn()
-        row = conn.execute("SELECT title, published, tags, content_html, published_ts, updated, source_url FROM posts WHERE post_id=?", (post_id,)).fetchone()
+        row = conn.execute("SELECT title, published, tags, content_html, published_ts, updated, source_url, canonical_path FROM posts WHERE post_id=?", (post_id,)).fetchone()
         conn.close()
         if not row:
             continue
         render_post(post_id, row["title"], row["published"], json.loads(row["tags"]), row["content_html"],
                     click_count=click_counts.get(post_id, 0), download_count=download_counts.get(post_id, 0),
                     published_ts=row["published_ts"], updated_ts=row["updated"],
-                    finish_read_count=finish_counts.get(post_id, 0), source_url=row["source_url"])
+                    finish_read_count=finish_counts.get(post_id, 0), source_url=row["source_url"],
+                    canonical_path=row["canonical_path"])
 
     # 计算每篇文章导出成Base64离线版之后的体积，存库供首页/搜索接口显示。
     # 复用app.py的_inline_post_as_base64，跟实际下载时用的是同一份逻辑，数字不会对不上。

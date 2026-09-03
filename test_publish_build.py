@@ -56,21 +56,32 @@ def _make_fixture_html_dir(tmp):
     (html_dir / "images").mkdir()
     (html_dir / "images" / "fox-header.png").write_bytes(b"\x89PNG-fake-bytes")
 
-    (html_dir / "posts" / "111").mkdir(parents=True)
-    (html_dir / "posts" / "111" / "index.html").write_text(
-        "<html><body>真实文章正文，示例password/token出现在正文里不代表危险</body></html>",
-        encoding="utf-8",
+    # 尽量贴近fetch_blog.py真实POST_TEMPLATE的结构(title/meta/tags/content
+    # 四个关键区块)，因为_extract_post_metadata()是按这个结构解析的，用一个
+    # 过度简化的fixture会测不出解析逻辑本身对不对。
+    demo_post_html = (
+        "<!DOCTYPE html><html><head><title>示例文章标题</title></head><body>"
+        '<h1>示例文章标题</h1>'
+        '<div class="meta">发布于 2026-07-15</div>'
+        '<div class="tags"><a href="/index.html?tag=Firefox">#Firefox</a>'
+        '<a href="/index.html?tag=隐私">#隐私</a></div>'
+        '<div class="content"><p>真实文章正文，示例password/token出现在正文里不代表危险。'
+        "这里还提到关键词Firefox方便测试搜索命中正文。</p></div>"
+        "</body></html>"
     )
+    (html_dir / "posts" / "111").mkdir(parents=True)
+    (html_dir / "posts" / "111" / "index.html").write_text(demo_post_html, encoding="utf-8")
     (html_dir / "posts" / "111" / "media").mkdir()
     (html_dir / "posts" / "111" / "media" / "pic.png").write_bytes(b"fake-image-bytes")
 
     (html_dir / "1").mkdir()
     (html_dir / "1" / "index.html").write_text("<html>短号跳转</html>", encoding="utf-8")
 
+    # canonical静态文件跟posts/<id>/index.html是同一段html的字节级拷贝
+    # （见fetch_blog.py的render_post()），这里保持一致，才能真正测到
+    # publish_build._find_public_url()的字节比对匹配逻辑。
     (html_dir / "2026" / "07").mkdir(parents=True)
-    (html_dir / "2026" / "07" / "demo-slug.html").write_text(
-        "<html><body>canonical文章</body></html>", encoding="utf-8"
-    )
+    (html_dir / "2026" / "07" / "demo-slug.html").write_text(demo_post_html, encoding="utf-8")
 
     (html_dir / "foxzen").mkdir()
     (html_dir / "foxzen" / "index.html").write_text("<html>foxzen.me专属页面</html>", encoding="utf-8")
@@ -221,6 +232,166 @@ def test_article_body_with_password_token_words_not_treated_as_secret():
     with_fixture(_run)
 
 
+def test_search_index_generated_with_expected_fields():
+    def _run(tmp, out):
+        import publish_build, json
+        publish_build.build_publish("github.foxzen.me", out)
+        data = json.loads((out / "search-index.json").read_text(encoding="utf-8"))
+        articles = data["articles"]
+        check("search-index.json至少包含一篇真实文章", len(articles) >= 1)
+        a = articles[0]
+        for field in ("id", "title", "url", "date", "tags", "text"):
+            check(f"文章记录包含字段: {field}", field in a)
+        check("title字段正确", a["title"] == "示例文章标题")
+        check("date字段正确", a["date"] == "2026-07-15")
+        check("tags字段正确", a["tags"] == ["Firefox", "隐私"])
+        check("text字段包含正文内容", "真实文章正文" in a["text"])
+        check("记录里没有多余字段(比如visitor/page_hit)",
+              set(a.keys()) == {"id", "title", "url", "date", "tags", "text"})
+    with_fixture(_run)
+
+
+def test_search_index_uses_canonical_url_when_available():
+    def _run(tmp, out):
+        import publish_build, json
+        publish_build.build_publish("github.foxzen.me", out)
+        data = json.loads((out / "search-index.json").read_text(encoding="utf-8"))
+        a = data["articles"][0]
+        check("有canonical静态文件时优先使用/YYYY/MM/slug.html而不是/posts/<id>/",
+              a["url"] == "/2026/07/demo-slug.html", f"got {a['url']}")
+    with_fixture(_run)
+
+
+def test_search_index_no_database_or_visitor_data():
+    def _run(tmp, out):
+        import publish_build, json
+        publish_build.build_publish("github.foxzen.me", out)
+        raw = (out / "search-index.json").read_text(encoding="utf-8")
+        check("search-index.json不含data/blog.db字样", "blog.db" not in raw)
+        check("search-index.json不含visitor_key字样", "visitor_key" not in raw)
+        check("search-index.json不含page_hit字样", "page_hit" not in raw)
+        check("search-index.json不含finish_read字样", "finish_read" not in raw)
+        data = json.loads(raw)
+        check("每条记录字段严格限定在允许范围内",
+              all(set(a.keys()) <= publish_build._ALLOWED_ARTICLE_FIELDS for a in data["articles"]))
+    with_fixture(_run)
+
+
+def test_search_index_same_data_across_hosts():
+    """GitHub和Cloudflare两个host的search-index.json应该是同一套数据——
+    只有站点用的CNAME/robots/sitemap域名不同，文章数据本身不该分叉。"""
+    def _run(tmp, out):
+        import publish_build, json
+        out_gh = tmp / "publish_gh"
+        out_cf = tmp / "publish_cf"
+        publish_build.build_publish("github.foxzen.me", out_gh)
+        publish_build.build_publish("cf.foxzen.me", out_cf)
+        data_gh = json.loads((out_gh / "search-index.json").read_text(encoding="utf-8"))
+        data_cf = json.loads((out_cf / "search-index.json").read_text(encoding="utf-8"))
+        check("两个host的search-index.json内容完全一致", data_gh == data_cf)
+    with_fixture(_run)
+
+
+def test_pages_index_js_copied_and_no_api_calls():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        js_file = out / "pages-index.js"
+        check("pages-index.js已复制进publish/", js_file.exists())
+        js_text = js_file.read_text(encoding="utf-8")
+        # 只检查真正会发起请求的代码（fetch调用），注释里提到"/api/*"是在
+        # 说明"这份代码不打这些接口"，本身不构成对/api/的实际调用。
+        code_lines = [ln for ln in js_text.splitlines() if not ln.strip().startswith("//")]
+        code_only = "\n".join(code_lines)
+        check("pages-index.js的实际代码中不包含/api/请求", "/api/" not in code_only)
+        check("index.html引用的是pages-index.js而不是生产的static/index.js",
+              "/pages-index.js" in (out / "index.html").read_text(encoding="utf-8"))
+        check("index.html不再引用生产/static/index.js",
+              "/static/index.js" not in (out / "index.html").read_text(encoding="utf-8"))
+        check("index.html包含搜索工具栏", 'id="pages-search-toolbar"' in (out / "index.html").read_text(encoding="utf-8"))
+    with_fixture(_run)
+
+
+def _run_node(js_snippet):
+    """用本机已有的node执行一段JS并返回stdout，找不到node时抛出异常
+    由调用方决定跳过而不是当成测试失败——node是否安装跟这份代码本身
+    对不对是两回事。"""
+    import subprocess
+    result = subprocess.run(
+        ["node", "-e", js_snippet],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout
+
+
+def test_pages_index_js_filter_logic_via_node():
+    """静态检查文件内容之外，真正用node执行pages-index.js里的纯函数
+    (filterArticles/paginateArticles/parseQueryFromSearch/buildQueryString)，
+    验证关键词/标签/日期/AND组合/分页/空搜索/URL往返这些真实JS行为，
+    而不是只能靠人工在浏览器里点一遍。"""
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过pages-index.js的真实JS行为验证")
+        return
+
+    js_path = (Path(__file__).parent / "static_pages" / "pages-index.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+
+    snippet = f"""
+    const P = require("{js_path_js}");
+    const articles = [
+      {{id:"1", title:"Firefox 隐私加固", url:"/2026/07/a.html", date:"2026-07-01", tags:["Firefox","隐私"], text:"关于浏览器隐私的讨论"}},
+      {{id:"2", title:"yt-dlp 教程", url:"/2026/07/b.html", date:"2026-07-15", tags:["工具"], text:"下载视频的方法"}},
+      {{id:"3", title:"Chrome 对比", url:"/2026/08/c.html", date:"2026-08-01", tags:["Firefox"], text:"和Chrome内核的比较"}},
+    ];
+
+    // 1. 关键词匹配标题
+    let r = P.filterArticles(articles, {{q:"yt-dlp"}});
+    console.log("q_title_match", r.length === 1 && r[0].id === "2");
+
+    // 2. 关键词匹配正文
+    r = P.filterArticles(articles, {{q:"浏览器隐私"}});
+    console.log("q_body_match", r.length === 1 && r[0].id === "1");
+
+    // 3. 标签过滤
+    r = P.filterArticles(articles, {{tag:"Firefox"}});
+    console.log("tag_filter", r.length === 2);
+
+    // 4. 日期区间过滤
+    r = P.filterArticles(articles, {{from:"2026-07-10", to:"2026-07-31"}});
+    console.log("date_range", r.length === 1 && r[0].id === "2");
+
+    // 5. 关键词+标签 AND 组合
+    r = P.filterArticles(articles, {{q:"Chrome", tag:"Firefox"}});
+    console.log("and_combo", r.length === 1 && r[0].id === "3");
+
+    // 6. 空搜索返回全部
+    r = P.filterArticles(articles, {{}});
+    console.log("empty_query_returns_all", r.length === 3);
+
+    // 7. 分页
+    const page = P.paginateArticles(articles, 1, 2);
+    console.log("pagination", page.items.length === 2 && page.totalPages === 2 && page.total === 3);
+
+    // 8. URL query往返
+    const state = P.parseQueryFromSearch("?q=Firefox&tag=%E9%9A%90%E7%A7%81&page=2&page_size=20");
+    console.log("parse_query", state.q === "Firefox" && state.tag === "隐私" && state.page === 2 && state.pageSize === 20);
+    const qs = P.buildQueryString(state);
+    console.log("build_query_roundtrip", qs.includes("q=Firefox") && qs.includes("page=2") && qs.includes("page_size=20"));
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    expected_true = [
+        "q_title_match", "q_body_match", "tag_filter", "date_range",
+        "and_combo", "empty_query_returns_all", "pagination",
+        "parse_query", "build_query_roundtrip",
+    ]
+    for name in expected_true:
+        check(f"pages-index.js真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+
 def test_verify_publish_passes_on_good_build():
     def _run(tmp, out):
         import publish_build
@@ -357,6 +528,12 @@ def main():
         test_same_builder_same_output_structure_for_both_hosts,
         test_index_js_removed_but_fallback_content_kept,
         test_article_body_with_password_token_words_not_treated_as_secret,
+        test_search_index_generated_with_expected_fields,
+        test_search_index_uses_canonical_url_when_available,
+        test_search_index_no_database_or_visitor_data,
+        test_search_index_same_data_across_hosts,
+        test_pages_index_js_copied_and_no_api_calls,
+        test_pages_index_js_filter_logic_via_node,
         test_verify_publish_passes_on_good_build,
         test_verify_publish_catches_injected_danger_file,
         test_verify_publish_catches_wrong_hostname,

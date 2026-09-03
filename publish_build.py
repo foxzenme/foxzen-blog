@@ -21,6 +21,8 @@ _is_allowed_top_level_dir() 明确认可的内容才会被复制进 publish/，
     python3 publish_build.py --host cf.foxzen.me
 """
 import argparse
+import html.parser
+import json
 import re
 import shutil
 from pathlib import Path
@@ -28,6 +30,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 HTML_DIR = BASE_DIR / "html"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "publish"
+PAGES_JS_SOURCE = BASE_DIR / "static_pages" / "pages-index.js"
 
 MIRROR_ROOT_URL = "https://mirror.foxzen.me"
 
@@ -42,6 +45,107 @@ ALLOWED_TOP_LEVEL_FILES = {
 ALLOWED_STATIC_DIR_NAMES = {"images", "posts"}
 
 INDEX_JS_SCRIPT_TAG = '<script src="/static/index.js"></script>'
+PAGES_JS_SCRIPT_TAG = '<script src="/pages-index.js"></script>'
+
+# 插入到#app容器之前的纯静态搜索工具栏。data-role属性是pages-index.js
+# 读取表单值用的钩子，不涉及任何/api/*请求。
+SEARCH_TOOLBAR_HTML = """<div id="pages-search-toolbar" style="margin-bottom:20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<input type="text" data-role="q" placeholder="搜索标题或正文..." style="flex:1;min-width:200px;padding:6px;">
+<input type="text" data-role="tag" placeholder="标签筛选" style="width:120px;padding:6px;">
+<input type="date" data-role="from" style="padding:6px;">
+<input type="date" data-role="to" style="padding:6px;">
+<button data-role="search-btn">搜索</button>
+<select data-role="page-size" style="padding:6px;">
+<option value="10">每页10篇</option>
+<option value="20">每页20篇</option>
+<option value="50">每页50篇</option>
+</select>
+</div>
+"""
+
+
+class _PostMetaExtractor(html.parser.HTMLParser):
+    """从fetch_blog.py渲染好的 posts/<id>/index.html 里提取标题/发布日期/
+    标签/正文纯文本——只解析已经公开存在的静态HTML本身，不查数据库，
+    所以Pages构建可以完全独立于data/blog.db（第十节要求）。
+
+    用深度计数而不是简单正则，是因为 .content 这个div内部本来就可能嵌套
+    任意多层子div（文章正文本身的排版），正则没法可靠匹配到对应的闭合标签。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.title = ""
+        self.published = ""
+        self.tags = []
+        self.text_parts = []
+        self._in_title = False
+        self._in_meta = False
+        self._meta_depth = 0
+        self._in_tags = False
+        self._tags_depth = 0
+        self._in_content = False
+        self._content_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        cls = attrs.get("class", "")
+
+        if tag == "title":
+            self._in_title = True
+
+        if tag == "div" and cls == "meta":
+            self._in_meta = True
+            self._meta_depth = 1
+        elif self._in_meta and tag == "div":
+            self._meta_depth += 1
+
+        if tag == "div" and cls == "tags":
+            self._in_tags = True
+            self._tags_depth = 1
+        elif self._in_tags and tag == "div":
+            self._tags_depth += 1
+        if self._in_tags and tag == "a":
+            m = re.search(r"[?&]tag=([^&]+)", attrs.get("href", ""))
+            if m:
+                from urllib.parse import unquote
+                self.tags.append(unquote(m.group(1)))
+
+        if tag == "div" and cls == "content":
+            self._in_content = True
+            self._content_depth = 1
+        elif self._in_content and tag == "div":
+            self._content_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        if self._in_meta and tag == "div":
+            self._meta_depth -= 1
+            if self._meta_depth <= 0:
+                self._in_meta = False
+        if self._in_tags and tag == "div":
+            self._tags_depth -= 1
+            if self._tags_depth <= 0:
+                self._in_tags = False
+        if self._in_content and tag == "div":
+            self._content_depth -= 1
+            if self._content_depth <= 0:
+                self._in_content = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        if self._in_meta and not self.published:
+            m = re.search(r"\d{4}-\d{2}-\d{2}", data)
+            if m:
+                self.published = m.group(0)
+        if self._in_content:
+            self.text_parts.append(data)
+
+    def plain_text(self) -> str:
+        text = " ".join(self.text_parts)
+        return re.sub(r"\s+", " ", text).strip()
 
 
 def _is_allowed_top_level_dir(name: str) -> bool:
@@ -74,8 +178,69 @@ def _rewrite_hostname(text: str, host: str) -> str:
 
 def _build_index_html(host: str) -> str:
     content = (HTML_DIR / "index.html").read_text(encoding="utf-8")
-    content = content.replace(INDEX_JS_SCRIPT_TAG, "")
+    # 生产的static/index.js全靠/api/*，纯静态环境下必然失败，换成只做浏览器
+    # 本地搜索/筛选/分页的pages-index.js（第十一节），并在#app前插入一个
+    # 静态搜索工具栏——原有的服务端渲染fallback-list保留，JS加载完成后
+    # 会在其基础上接管展示。
+    content = content.replace(INDEX_JS_SCRIPT_TAG, PAGES_JS_SCRIPT_TAG)
+    content = content.replace('<div id="app">', SEARCH_TOOLBAR_HTML + '<div id="app">')
     return content
+
+
+def _extract_post_metadata(post_html: str) -> dict:
+    parser = _PostMetaExtractor()
+    parser.feed(post_html)
+    return {
+        "title": parser.title.strip(),
+        "date": parser.published,
+        "tags": parser.tags,
+        "text": parser.plain_text(),
+    }
+
+
+def _find_public_url(output_dir: Path, post_id: str, post_content: str) -> str:
+    """优先用canonical静态URL（/YYYY/MM/slug.html），因为这是mirror生产站
+    也在用的正式地址；只有解析不出canonical_path（fetch_blog.py没能从
+    permalink提取出年/月/slug）时才退回 /posts/<id>/。
+
+    判断"哪个YYYY/MM/slug.html对应这篇文章"用字节内容比对——canonical_
+    static_target()生成的静态文件跟posts/<id>/index.html本来就是同一段
+    html字符串的两份拷贝（见fetch_blog.py的render_post()），不是巧合。
+    当前文章数量只有十几篇，逐个比对没有性能问题。
+    """
+    for year_dir in sorted(p for p in output_dir.glob("[0-9][0-9][0-9][0-9]") if p.is_dir()):
+        for slug_file in year_dir.glob("*/*.html"):
+            if slug_file.read_text(encoding="utf-8") == post_content:
+                return "/" + slug_file.relative_to(output_dir).as_posix()
+    return f"/posts/{post_id}/"
+
+
+def _build_search_index(output_dir: Path) -> list:
+    """从已经复制进output_dir的 posts/<id>/index.html 里提取搜索索引，
+    只在html/白名单内容都已经复制完之后调用——不查数据库、不读访问统计，
+    只包含公开文章搜索需要的字段(title/url/date/tags/text)。
+    """
+    articles = []
+    posts_dir = output_dir / "posts"
+    if not posts_dir.exists():
+        return articles
+    for post_dir in sorted(posts_dir.iterdir()):
+        index_file = post_dir / "index.html"
+        if not index_file.exists():
+            continue
+        post_id = post_dir.name
+        content = index_file.read_text(encoding="utf-8")
+        meta = _extract_post_metadata(content)
+        articles.append({
+            "id": post_id,
+            "title": meta["title"],
+            "url": _find_public_url(output_dir, post_id, content),
+            "date": meta["date"],
+            "tags": meta["tags"],
+            "text": meta["text"],
+        })
+    articles.sort(key=lambda a: a["date"], reverse=True)
+    return articles
 
 
 def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
@@ -118,6 +283,15 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
     CNAME = output_dir / "CNAME"
     CNAME.write_text(host + "\n", encoding="utf-8")
 
+    if PAGES_JS_SOURCE.exists():
+        shutil.copy2(PAGES_JS_SOURCE, output_dir / "pages-index.js")
+
+    articles = _build_search_index(output_dir)
+    (output_dir / "search-index.json").write_text(
+        json.dumps({"articles": articles}, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
     return output_dir
 
 
@@ -131,7 +305,13 @@ _DANGEROUS_SUFFIXES = (
     ".key", ".p12", ".pfx", ".secret", ".token", ".py",
 )
 _DANGEROUS_NAMES = {"id_rsa", "id_ed25519", "foxzen-download-admin.html"}
-_REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME")
+_REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME",
+                    "search-index.json", "pages-index.js")
+
+# search-index.json里每条记录只允许出现这些字段——如果以后有人不小心往
+# _build_search_index()里加了别的字段（比如手滑传入了visitor_key），
+# 这里会直接拒绝通过，而不是靠人工审查发现。
+_ALLOWED_ARTICLE_FIELDS = {"id", "title", "url", "date", "tags", "text"}
 
 
 def verify_publish(output_dir: Path, host: str) -> None:
@@ -173,6 +353,28 @@ def verify_publish(output_dir: Path, host: str) -> None:
             errors.append(f"{name} 仍然包含 mirror.foxzen.me，未正确替换为 {host}")
         if name != "CNAME" and host not in text:
             errors.append(f"{name} 没有包含目标hostname {host}")
+
+    index_file = output_dir / "search-index.json"
+    if index_file.exists():
+        try:
+            index_data = json.loads(index_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            errors.append(f"search-index.json 不是合法JSON: {e}")
+            index_data = None
+        if index_data is not None:
+            articles = index_data.get("articles")
+            if not isinstance(articles, list) or not articles:
+                errors.append("search-index.json 里没有任何文章记录")
+            else:
+                for a in articles:
+                    extra_fields = set(a.keys()) - _ALLOWED_ARTICLE_FIELDS
+                    if extra_fields:
+                        errors.append(f"search-index.json 记录出现不允许的字段: {extra_fields}")
+                    for field in ("title", "url", "date"):
+                        if not a.get(field):
+                            errors.append(f"search-index.json 记录缺少必需字段: {field} (id={a.get('id')})")
+                    if MIRROR_ROOT_URL in str(a.get("url", "")):
+                        errors.append(f"search-index.json 的url字段仍写死了mirror.foxzen.me (id={a.get('id')})")
 
     if errors:
         raise PublishVerificationError("；".join(errors))

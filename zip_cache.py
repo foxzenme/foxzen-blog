@@ -11,9 +11,11 @@
   （Python zipfile标准库不支持真正的跨卷ZIP格式，也没必要为此手写）；
 - 不引入Redis/Celery/数据库，只用标准库 + 文件系统。
 
-版本号怎么算：不去改fetch_blog.py或数据库schema，直接用"文章数量 + 所有文章
-index.html的最新mtime + 首页index.html的mtime"做签名。新增文章会改变数量，
-内容更新fetch_blog.py会重写index.html从而改变mtime，两种情况都能被捕捉到。
+版本号怎么算：不改fetch_blog.py、不加数据库字段，直接读现成的
+posts.content_hash（fetch_blog.py本来就用它判断文章内容是否变化）拼出签名。
+见 compute_content_version() 里的详细说明——用文件mtime做过版本号，
+但fetch_blog.py每次抓取都会无条件重写所有文件，mtime测不出"内容有没有真的变"，
+已经改成基于content_hash。
 
 删除旧版本ZIP为什么不用防"正在下载"的锁：
 Linux下 unlink() 一个还有进程持有打开fd的文件是安全的——文件内容对那个fd
@@ -29,6 +31,8 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+
+import db
 
 BASE_DIR = Path(__file__).parent
 HTML_DIR = BASE_DIR / "html"
@@ -97,25 +101,30 @@ def _write_state_atomic(state):
 
 
 def compute_content_version():
-    """见模块开头说明：数量+最大mtime拼出的短哈希，代表磁盘上镜像内容的当前版本。"""
-    max_mtime = 0.0
-    count = 0
-    if POSTS_DIR.exists():
-        for post_dir in POSTS_DIR.iterdir():
-            if not post_dir.is_dir():
-                continue
-            idx = post_dir / "index.html"
-            if idx.exists():
-                count += 1
-                mtime = idx.stat().st_mtime
-                if mtime > max_mtime:
-                    max_mtime = mtime
-    index_file = HTML_DIR / "index.html"
-    if index_file.exists():
-        mtime = index_file.stat().st_mtime
-        if mtime > max_mtime:
-            max_mtime = mtime
-    raw = f"{count}:{max_mtime:.3f}"
+    """用数据库里 posts.content_hash 拼出版本签名，不用文件mtime。
+
+    最初用的是"所有文章index.html + 首页index.html的最大mtime"，复核时发现
+    这个假设不成立：fetch_blog.py的render_post()/render_index()每次抓取都会
+    无条件write_text()重写这些文件——哪怕文章内容完全没变，首页里嵌入的访问/
+    点击/下载统计和"最后更新时间"本来就该每次刷新。所以只要crontab里的hourly
+    fetch_blog.py跑过一次（不管有没有新文章），mtime就会变，ZIP缓存就被误判
+    过期——不符合"内容真正变化才失效"的要求。
+
+    content_hash 不一样：它是 content_hash_of(localized_content) 算出来的，
+    只反映文章正文内容本身，fetch_blog.py只有在 old_hash != new_hash 时才会
+    更新它（见fetch_blog.py第479行附近），访问量变化、首页统计刷新都不会碰它。
+    这里把所有(post_id, content_hash)拼起来再取哈希：新增文章(多一个post_id)、
+    删除文章(少一个post_id)、内容修改(某个content_hash变化)都会让签名变化，
+    单纯重新抓取但内容没变则不会。
+    """
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT post_id, content_hash FROM posts ORDER BY post_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    raw = "|".join(f"{r['post_id']}:{r['content_hash']}" for r in rows)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 

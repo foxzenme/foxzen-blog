@@ -596,7 +596,7 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 <!-- GA_END -->
 <meta charset="UTF-8">
 <link rel="icon" type="image/png" href="/images/fox-header.png">
-<title>统计学习小议 - 镜像站</title>
+<title>狐斋志异</title>
 <style>
 body {{ max-width: 760px; margin: 40px auto; padding: 0 20px;
        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }}
@@ -630,7 +630,7 @@ li {{ margin-bottom: 1em; }}
 </head>
 <body>
 <img class="header-img" src="images/fox-header.png" alt="狐斋志异" onerror="this.style.display='none'">
-<h1>统计学习小议 - 镜像站</h1>
+<h1>狐斋志异</h1>
 <p>本站为 <a href="{blog_root_url}" target="_blank" rel="noopener">主站</a> 的静态镜像，内容定期同步。</p>
 <p class="daily-quote">🦊 <!--QUOTE--></p>
 

@@ -306,6 +306,19 @@ def _zip_posts(post_ids):
     return buf
 
 
+def _send_cached_zip(path, download_name):
+    """path是resolve_part_path()前一刻确认存在的文件，但"确认存在"和这里真正
+    open()之间有一个极小的时间窗口——文件可能恰好在这中间被闲置清理或版本切换
+    清理掉（这些都是正常的后台行为，不是故障）。用try/except兜底，把它转成
+    明确的503请客户端重试，而不是让FileNotFoundError冒泡成没有意义的裸500。
+    """
+    try:
+        return send_file(str(path), mimetype="application/zip", as_attachment=True,
+                          download_name=download_name)
+    except FileNotFoundError:
+        return jsonify({"error": "文件在准备下载时被清理，请重新请求一次"}), 503
+
+
 @app.route("/api/download/all", methods=["GET"])
 def download_all():
     """整站完整ZIP走磁盘缓存（zip_cache.py），不再每次请求都现场压缩。
@@ -317,6 +330,8 @@ def download_all():
     try:
         state = zip_cache.get_or_build()
     except RuntimeError as e:
+        # 覆盖排队超时(ZipBuildError子类RuntimeError)和真正构建失败两种情况，
+        # str(e)只包含zip_cache.py里写好的通用提示，不带内部路径/原始异常文本。
         return jsonify({"error": str(e)}), 503
     zip_cache.touch_last_used()
 
@@ -329,8 +344,7 @@ def download_all():
         path = zip_cache.resolve_part_path(parts[0]["name"])
         if not path:
             return jsonify({"error": "缓存文件意外丢失，请重试"}), 503
-        return send_file(str(path), mimetype="application/zip", as_attachment=True,
-                          download_name="blog-mirror-full.zip")
+        return _send_cached_zip(path, "blog-mirror-full.zip")
 
     return jsonify({
         "multipart": True,
@@ -343,16 +357,26 @@ def download_all():
 
 @app.route("/api/download/manifest", methods=["GET"])
 def download_manifest():
-    """给前端/运维查询当前完整博客ZIP的缓存状态，不触发下载计数。"""
-    try:
-        state = zip_cache.get_or_build()
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 503
-    parts = state["parts"]
+    """查询当前完整博客ZIP的缓存状态，纯只读，不触发构建、不算一次"使用"。
+
+    之前的实现调用了get_or_build()——一个看起来像"查询"的接口，第一次访问却
+    会触发真正的压缩构建，语义上自相矛盾（而且当时这个接口还没有任何前端在用，
+    改动不存在兼容性负担）。现在manifest只描述"磁盘上现在已经有什么"：
+    - 还没生成过 -> cached=false, version=null, parts=[]，前端可以先显示一个
+      不带具体大小的"下载完整博客"按钮；
+    - 已经生成过，但文章后来又更新了 -> cached=true, current=false，manifest
+      报告的是"点下载能立刻拿到的旧缓存"，不代表最新内容；
+    - 已经生成过且就是最新内容 -> cached=true, current=true。
+    真正的"按最新内容生成/复用"逻辑只在/api/download/all（用户点了下载）时发生。
+    """
+    info = zip_cache.peek_state()
+    parts = info["parts"]
     return jsonify({
-        "version": state["version"],
+        "version": info["version"],
+        "cached": info["cached"],
+        "current": info["current"],
         "multipart": len(parts) > 1,
-        "generated_at": state["generated_at"],
+        "generated_at": info["generated_at"],
         "parts": [{"name": p["name"], "size": p["size"],
                    "url": f"/download/{p['name']}" if len(parts) > 1 else "/api/download/all"}
                   for p in parts],
@@ -368,8 +392,7 @@ def download_zip_part(name):
     if not path:
         abort(404)
     zip_cache.touch_last_used()
-    return send_file(str(path), mimetype="application/zip", as_attachment=True,
-                      download_name=name)
+    return _send_cached_zip(path, name)
 
 
 @app.route("/api/download/selected", methods=["POST"])

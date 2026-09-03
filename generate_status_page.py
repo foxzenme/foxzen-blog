@@ -23,6 +23,7 @@ Flask进程的纯静态HTML，后续可以推到GitHub Pages/Cloudflare Pages（
       等你确认再做。
 """
 import html
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -62,9 +63,31 @@ ENTRY_TEMPLATE = """<div class="entry">
 </div>"""
 
 
+# 允许的时间格式，按顺序尝试：可以不写秒，但年月日时分必须是合法的公历日期时间。
+# Python的strptime对%m/%d/%H/%M本来就不要求严格零填充（"2026-9-2 9:30"能被
+# %Y-%m-%d %H:%M解析），这里不额外强制零填充——反正排序用的是解析后的datetime
+# 对象，不是原始字符串，零填不填不影响排序结果是否正确。
+TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
+
+
+def _parse_time(time_str):
+    """按TIME_FORMATS依次尝试解析，都失败返回None（调用方据此跳过整行并警告）。"""
+    for fmt in TIME_FORMATS:
+        try:
+            return datetime.strptime(time_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def parse_announcements(text):
-    """解析announcements.txt，跳过注释和空行，跳过分段数不对的行（不因为格式
-    错误的一行就让整个页面生成失败），返回按时间倒序排列的公告列表。
+    """解析announcements.txt，跳过注释和空行、分段数不对的行、时间格式非法的行
+    （不因为一行格式错误就让整个页面生成失败），返回按时间倒序排列的公告列表。
+
+    排序用解析后的datetime对象而不是原始字符串——之前直接按字符串字典序排，
+    如果时间格式不统一（比如混用零填充和不零填充、或者干脆用不同的日期格式），
+    字典序和实际时间先后顺序会对不上；解析成datetime之后按真实时间值比较，
+    不会有这个问题。
     """
     entries = []
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
@@ -76,8 +99,13 @@ def parse_announcements(text):
             print(f"  [警告] announcements.txt 第{lineno}行格式不对（应为 时间|类型|内容），已跳过: {line!r}")
             continue
         time_str, type_str, message = (p.strip() for p in parts)
-        entries.append({"time": time_str, "type": type_str, "message": message})
-    entries.sort(key=lambda e: e["time"], reverse=True)
+        parsed_time = _parse_time(time_str)
+        if parsed_time is None:
+            print(f"  [警告] announcements.txt 第{lineno}行时间格式不对"
+                  f"（应为 YYYY-MM-DD HH:MM 或 YYYY-MM-DD HH:MM:SS），已跳过: {time_str!r}")
+            continue
+        entries.append({"time": time_str, "parsed_time": parsed_time, "type": type_str, "message": message})
+    entries.sort(key=lambda e: e["parsed_time"], reverse=True)
     return entries
 
 

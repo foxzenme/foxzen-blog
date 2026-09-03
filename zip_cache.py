@@ -44,13 +44,28 @@ LOCK_FILE = CACHE_DIR / "build.lock"
 # 单个分卷的安全阈值：不设成刚好512MB（Cloudflare单文件缓存上限），留足安全余量。
 MAX_PART_BYTES = 450 * 1024 * 1024
 
-# 生成任务锁的最长等待时间：超过这个时间还没等到，说明构建大概率卡死了，
-# 与其让请求无限挂起，不如明确报错，运维能第一时间在日志里看到。
-LOCK_WAIT_TIMEOUT_SECONDS = 300
 LOCK_POLL_INTERVAL_SECONDS = 0.5
-# 锁文件存在超过这个时间还没被释放，视为上一次构建异常崩溃遗留，强行接管清除，
-# 避免一次意外崩溃就永久卡死后续所有下载请求。
+
+# 锁文件存在超过这么久还没被释放，判定为上一次构建异常崩溃遗留，强行接管清除，
+# 避免一次意外崩溃就永久卡死后续所有下载请求。这个判断只看锁文件的创建时间，
+# 没有心跳机制——本质上是"我们认为一次正常构建不可能长于这个时间"的估计值，
+# 博客体积明显变大、压缩耗时明显变长之后，需要手动调大这个常量。
 LOCK_STALE_SECONDS = 600
+
+# 等待者（没抢到锁、在排队等别人构建完成的请求）最长愿意等多久。
+# 必须 >= LOCK_STALE_SECONDS，而且不能只是数值上凑巧满足——否则容易出现复核中
+# 发现的问题：等待者在锁其实还很"新"（构建大概率仍在正常进行，远没到被判定为
+# stale的地步）的时候就提前放弃报错。写成LOCK_STALE_SECONDS的派生值，保证这个
+# 大小关系不会因为以后单独调整某一个常量而意外破坏。
+# 多给60秒余量：即使锁在等待者的deadline前一刻才变成stale，也留出一轮
+# LOCK_POLL_INTERVAL_SECONDS的时间，让等待者在自己的循环里把它接管过来构建，
+# 而不是卡在deadline边界上直接报错。
+# 这仍然只是一个尽力而为的超时上限，不是真正的死锁检测：如果构建进程正常存活但
+# 单次耗时长期超过LOCK_STALE_SECONDS，等待者会误判它已经stale并自己抢锁重建，
+# 造成一次重复构建（结果内容相同，只是多浪费一次CPU，不会产生错误内容）；
+# 如果构建进程整个卡死不释放锁，等待者最终会在这个超时点收到明确的503，
+# 而不是无限期挂起。
+LOCK_WAIT_TIMEOUT_SECONDS = LOCK_STALE_SECONDS + 60
 
 # 当前版本的ZIP如果超过这么久没有新的下载请求，允许清理释放磁盘，
 # 下次请求会重新生成（此时版本号大概率不变，等于重新压缩一遍，这是刻意的取舍：
@@ -66,6 +81,15 @@ _cleanup_thread_lock = threading.Lock()
 
 _FILE_RETRY_ATTEMPTS = 5
 _FILE_RETRY_DELAY_SECONDS = 0.05
+
+
+class ZipBuildError(RuntimeError):
+    """生成完整博客ZIP失败时抛出。特意继承RuntimeError而不是新建一个不相关的
+    异常类型——app.py里已有的路由本来就用 except RuntimeError 捕获"生成超时"，
+    这样"构建失败"和"排队超时"可以复用同一段错误处理代码，不用改app.py。
+    异常信息只包含面向用户的通用提示，不带内部路径/原始异常文本，那些细节
+    通过print()打到服务器日志里，不会经由HTTP响应泄露给客户端。
+    """
 
 
 def _read_state():
@@ -257,7 +281,11 @@ def _build(version):
 
 
 def get_or_build():
-    """返回当前可用的缓存清单（含version/parts/...），必要时才真正生成。"""
+    """返回当前可用的缓存清单（含version/parts/...），必要时才真正生成。
+    构建失败（磁盘写入/IO异常等）会转换成ZipBuildError（RuntimeError的子类），
+    带一句面向用户的通用提示；完整异常和堆栈会先打到服务器日志里，方便排查，
+    但不会把内部路径或原始异常文本经HTTP返回给调用方。
+    """
     version = compute_content_version()
     state = _read_state()
     if state.get("version") == version and _parts_exist(state):
@@ -268,14 +296,44 @@ def get_or_build():
         if state.get("version") == version and _parts_exist(state):
             return state
         if not _acquire_build_lock():
-            raise RuntimeError("生成完整博客ZIP超时，请稍后重试")
+            raise ZipBuildError("生成完整博客ZIP超时，请稍后重试")
         try:
             state = _read_state()
             if state.get("version") == version and _parts_exist(state):
                 return state
-            return _build(version)
+            try:
+                return _build(version)
+            except Exception as e:
+                import traceback
+                print(f"[zip_cache] 生成完整博客ZIP失败: {e!r}")
+                print(traceback.format_exc())
+                raise ZipBuildError("生成完整博客ZIP失败，请稍后重试") from e
         finally:
             _release_build_lock()
+
+
+def peek_state():
+    """只读地看一眼当前缓存状态，不触发任何构建，也不算一次"使用"（不touch
+    last_used_at）。给manifest这类"描述现在有什么"的查询接口用——manifest不该
+    有"顺便帮你生成一份"的副作用，那是/api/download/all（真正的下载请求）该做
+    的事，两者职责分开。
+
+    返回的"current"字段表示：磁盘上现有的缓存（如果有的话）是否就是最新内容对应
+    的版本。如果文章刚更新但还没人真的点过下载触发重新生成，current会是False——
+    这是有意的设计取舍：manifest反映"现在已经生成好、随时能直接返回的文件"，
+    不代表"如果现在点下载会拿到的最新内容"；真下载时/api/download/all会按最新
+    版本重新生成，用户不会拿到过期内容。
+    """
+    version = compute_content_version()
+    state = _read_state()
+    has_valid_cache = bool(state) and _parts_exist(state)
+    return {
+        "version": state.get("version") if has_valid_cache else None,
+        "cached": has_valid_cache,
+        "current": has_valid_cache and state.get("version") == version,
+        "parts": state.get("parts", []) if has_valid_cache else [],
+        "generated_at": state.get("generated_at") if has_valid_cache else None,
+    }
 
 
 def touch_last_used():

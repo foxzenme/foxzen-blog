@@ -54,3 +54,16 @@ $RECYCLE.BIN/
 ### 项目运行时产物（不应提交，见 zip_cache.py / generate_status_page.py 的说明）
 data/zip_cache/
 static_status/
+
+# Production database and SQLite runtime files
+data/blog.db
+data/blog.db-shm
+data/blog.db-wal
+
+# Local secrets / credentials
+.env
+*.env
+*.pem
+*.key
+*.secret
+*.token

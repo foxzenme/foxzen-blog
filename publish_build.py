@@ -176,7 +176,61 @@ def _rewrite_hostname(text: str, host: str) -> str:
     return text.replace(MIRROR_ROOT_URL, f"https://{host}")
 
 
-def _build_index_html(host: str) -> str:
+
+# fetch_blog.py 的 render_index()/_href_for() 只要一篇文章有 canonical_path
+# 就无条件写 /YYYY/MM/slug.html，从不检查这个静态文件在html/里是否真的
+# 生成过（mirror.foxzen.me用不着关心这个——Flask的canonical_post_page路由
+# 是按canonical_path查数据库直接渲染，文件存不存在无所谓）。但纯静态托管的
+# Pages只能靠真实文件，这个正则就是用来在index.html里找出"点击排行榜/
+# 下载排行榜/fallback-list"里长得像canonical文章链接的<a>标签——只匹配
+# 站内根相对路径 + /YYYY/MM/xxx.html这个精确形状，天然不会碰到首页链接"/"、
+# 图片链接、"其他入口"区块的外部https链接、/404/彩蛋链接。
+_ARTICLE_HREF_PATTERN = re.compile(
+    r'href="(/\d{4}/\d{2}/[^"]+\.html)"([^>]*)>([^<]*)</a>'
+)
+
+
+def _fix_article_hrefs(content: str, output_dir: Path) -> str:
+    """把index.html文本里"看起来是canonical文章链接"的href，替换成
+    _find_public_url()验证过的真实地址——同一个post_id如果对应的canonical
+    静态文件确实存在就保留canonical地址，不存在就退回到确认存在的
+    /posts/<id>/，跟search-index.json用的是完全同一套判断逻辑，不另外
+    发明一套"猜测"规则。
+
+    用锚文本（文章标题）反查是哪篇文章：render_index()生成的锚文本就是
+    posts.title本身，跟_extract_post_metadata()从posts/<id>/index.html里
+    解析出的标题是同一个字段，天然可以拿来做join key，不需要读数据库。
+    比对前统一做.strip()——_extract_post_metadata()对<title>标签内容会
+    strip()，但index.html锚文本前后可能保留了模板里原有的空白（例如
+    "...内核浏览器 </a>"这种Blogger标题自带的尾随空格），不strip会导致
+    明明是同一篇文章却匹配不上、被误判成"找不到对应文章"。
+
+    如果标题在articles里找不到、或者两篇文章标题完全相同导致无法唯一
+    确定是哪一篇，一律保留原href不动——宁可继续404，也不要猜。
+    """
+    articles = _build_search_index(output_dir)
+    title_counts = {}
+    title_to_url = {}
+    for a in articles:
+        title_counts[a["title"]] = title_counts.get(a["title"], 0) + 1
+        title_to_url[a["title"]] = a["url"]
+
+    def _replace(m: re.Match) -> str:
+        original_href, rest_attrs, raw_title = m.group(1), m.group(2), m.group(3)
+        title = raw_title.strip()
+        if title_counts.get(title) != 1:
+            if title in title_counts:
+                print(f"  [警告] 首页文章链接标题不唯一，跳过修正: {title!r}")
+            else:
+                print(f"  [警告] 首页文章链接找不到对应文章，跳过修正: {title!r} (href={original_href})")
+            return m.group(0)
+        real_url = title_to_url[title]
+        return f'href="{real_url}"{rest_attrs}>{raw_title}</a>'
+
+    return _ARTICLE_HREF_PATTERN.sub(_replace, content)
+
+
+def _build_index_html(host: str, output_dir: Path) -> str:
     content = (HTML_DIR / "index.html").read_text(encoding="utf-8")
     # 生产的static/index.js全靠/api/*，纯静态环境下必然失败，换成只做浏览器
     # 本地搜索/筛选/分页的pages-index.js（第十一节），并在#app前插入一个
@@ -184,6 +238,11 @@ def _build_index_html(host: str) -> str:
     # 会在其基础上接管展示。
     content = content.replace(INDEX_JS_SCRIPT_TAG, PAGES_JS_SCRIPT_TAG)
     content = content.replace('<div id="app">', SEARCH_TOOLBAR_HTML + '<div id="app">')
+    # 点击排行榜/下载排行榜/fallback-list三处都用_href_for()同一套逻辑生成
+    # canonical链接，这里统一修正，不用区分是哪个区块。必须在html/的目录
+    # （posts/、YYYY/等）已经复制进output_dir之后才能调用，见build_publish()
+    # 里的调用顺序。
+    content = _fix_article_hrefs(content, output_dir)
     return content
 
 
@@ -213,6 +272,82 @@ def _find_public_url(output_dir: Path, post_id: str, post_content: str) -> str:
             if slug_file.read_text(encoding="utf-8") == post_content:
                 return "/" + slug_file.relative_to(output_dir).as_posix()
     return f"/posts/{post_id}/"
+
+
+_OWN_PERMALINK_PATTERN = re.compile(r'<a class="discuss-btn" href="([^"]+)"')
+_ANCHOR_OPEN_TAG_PATTERN = re.compile(r'<a\b[^>]*>')
+
+
+def _fix_cross_post_content_links(output_dir: Path) -> None:
+    """把文章正文里"指向本站另一篇文章的Blogger permalink"改写成当前host
+    下经过_find_public_url()验证的真实静态地址，同时保证一系列"绝不能碰"
+    的例外：
+
+    - "💬 到主站参与讨论"按钮（class="discuss-btn"）用的就是本文自己的
+      Blogger permalink，语义上不是"引用别的文章"，必须原样保留——这里
+      直接跳过任何带这个class的<a>标签，不去解析它的href。
+    - 每篇文章自己的permalink（不管出现在哪里）也不重写——它不是"指向
+      另一篇文章"，天然被下面"跳过等于own_permalink的href"这条规则排除。
+    - 指向Blogger上其他内容（非本站已抓取文章、外部链接、页面而非文章）
+      的permalink，在permalink_to_url里找不到对应项，原样保留，不猜测。
+
+    "本站另一篇文章"的判定：每篇文章自己的discuss-btn href就是它在Blogger
+    的permalink，这个值已经明明白白写在它自己的posts/<id>/index.html里，
+    不需要读数据库——用这个字段反过来建"permalink -> 这篇文章在当前host下
+    的真实地址"的映射表，跟上一轮排行榜/列表href修复用标题做join key是
+    同一个思路，只是这次的key更精确（permalink天然唯一，不像标题可能重复）。
+
+    必须在html/的目录（posts/、YYYY/等）已经复制进output_dir之后调用，
+    因为要用到_find_public_url()对真实文件存在性的判断。修改后会把同一份
+    新内容同步写回posts/<id>/index.html和它对应的YYYY/MM/slug.html
+    （如果存在），保持fetch_blog.py render_post()原有的"两份拷贝字节一致"
+    这个不变式。
+    """
+    posts_dir = output_dir / "posts"
+    if not posts_dir.exists():
+        return
+
+    post_entries = []
+    permalink_to_url = {}
+    for post_dir in sorted(posts_dir.iterdir()):
+        index_file = post_dir / "index.html"
+        if not index_file.exists():
+            continue
+        post_id = post_dir.name
+        content = index_file.read_text(encoding="utf-8")
+        m = _OWN_PERMALINK_PATTERN.search(content)
+        own_permalink = m.group(1) if m else None
+        real_url = _find_public_url(output_dir, post_id, content)
+        canonical_dup = (
+            output_dir / real_url.lstrip("/")
+            if re.match(r"^/\d{4}/\d{2}/", real_url) else None
+        )
+        post_entries.append((post_id, index_file, canonical_dup, content, own_permalink))
+        if own_permalink:
+            permalink_to_url[own_permalink] = real_url
+
+    for post_id, index_file, canonical_dup, content, own_permalink in post_entries:
+        def _rewrite_tag(match, _own=own_permalink):
+            tag_text = match.group(0)
+            if 'class="discuss-btn"' in tag_text:
+                return tag_text
+            href_match = re.search(r'href="([^"]+)"', tag_text)
+            if not href_match:
+                return tag_text
+            href = href_match.group(1)
+            if href == _own:
+                return tag_text
+            real_url = permalink_to_url.get(href)
+            if real_url is None:
+                return tag_text
+            return tag_text.replace(f'href="{href}"', f'href="{real_url}"', 1)
+
+        new_content = _ANCHOR_OPEN_TAG_PATTERN.sub(_rewrite_tag, content)
+        if new_content == content:
+            continue
+        index_file.write_text(new_content, encoding="utf-8")
+        if canonical_dup is not None and canonical_dup.exists():
+            canonical_dup.write_text(new_content, encoding="utf-8")
 
 
 def _build_search_index(output_dir: Path) -> list:
@@ -255,23 +390,33 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
-    for name in ALLOWED_TOP_LEVEL_FILES:
-        src = HTML_DIR / name
-        if not src.exists():
-            continue
-        text = src.read_text(encoding="utf-8")
-        if name == "index.html":
-            text = _build_index_html(host)
-        elif name in ("robots.txt", "sitemap.xml"):
-            text = _rewrite_hostname(text, host)
-        (output_dir / name).write_text(text, encoding="utf-8")
-
     for child in HTML_DIR.iterdir():
         if not child.is_dir():
             continue
         if not _is_allowed_top_level_dir(child.name):
             continue
         shutil.copytree(child, output_dir / child.name)
+
+    # 文章正文里"指向本站另一篇文章"的Blogger permalink交叉引用修正，
+    # 必须在目录复制之后（要用output_dir里已经存在的真实文件做校验）、
+    # 在下面index.html生成之前（_build_index_html里的_build_search_index()
+    # 会读取posts/<id>/index.html的内容，应该读到修正后的版本）执行。
+    _fix_cross_post_content_links(output_dir)
+
+    # index.html的生成放在目录复制之后：_build_index_html()内部要修正
+    # 排行榜/fallback-list里的文章链接，需要用output_dir/posts、
+    # output_dir/YYYY这些已经复制好的真实文件去验证链接是否可达
+    # （见_fix_article_hrefs()），顺序不能反过来。
+    for name in ALLOWED_TOP_LEVEL_FILES:
+        src = HTML_DIR / name
+        if not src.exists():
+            continue
+        text = src.read_text(encoding="utf-8")
+        if name == "index.html":
+            text = _build_index_html(host, output_dir)
+        elif name in ("robots.txt", "sitemap.xml"):
+            text = _rewrite_hostname(text, host)
+        (output_dir / name).write_text(text, encoding="utf-8")
 
     # GitHub Pages / Cloudflare Pages 都会自动把根目录的404.html当成
     # 未匹配路径的兜底页面；生产环境用的是 /404/index.html（Nginx按目录

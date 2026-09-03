@@ -89,6 +89,440 @@ def _make_fixture_html_dir(tmp):
     return html_dir
 
 
+def _make_post_html(title, date, content_extra=""):
+    """跟_make_fixture_html_dir()里那份一样，贴近真实POST_TEMPLATE的
+    title/meta/tags/content四个关键区块结构，供下面几个href修正测试复用。"""
+    return (
+        f"<!DOCTYPE html><html><head><title>{title}</title></head><body>"
+        f"<h1>{title}</h1>"
+        f'<div class="meta">发布于 {date}</div>'
+        '<div class="tags"></div>'
+        f'<div class="content"><p>正文内容。{content_extra}</p></div>'
+        "</body></html>"
+    )
+
+
+def _make_fixture_html_dir_for_href_fix(tmp):
+    """专门用来测试"首页文章链接修正"(_fix_article_hrefs)的夹具，跟
+    _make_fixture_html_dir()完全独立，不共用、不互相影响。
+
+    构造四篇文章，覆盖P0修复需要处理的四种场景：
+    - post-ok：canonical静态文件确实存在 -> 链接应该保持canonical地址；
+    - post-missing：index.html里写的是canonical链接，但对应静态文件
+      不存在（复现当前真实bug现场）-> 链接应该被修正成/posts/<id>/；
+    - post-dup-a / post-dup-b：两篇标题完全相同、canonical文件都不存在 ->
+      标题不唯一，两个链接都应该原样保留不动（宁可继续404也不猜）。
+
+    index.html里"点击排行榜""下载排行榜""fallback-list"三处都引用了这几篇
+    文章，贴近render_index()/rank_html()/_href_for()真实生成的html结构
+    （<li><a href="..." target="_blank" rel="noopener">标题</a>...）。
+    """
+    html_dir = tmp / "html"
+    html_dir.mkdir()
+
+    (html_dir / "robots.txt").write_text(
+        "User-agent: *\nAllow: /\nSitemap: https://mirror.foxzen.me/sitemap.xml\n",
+        encoding="utf-8",
+    )
+    (html_dir / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<url><loc>https://mirror.foxzen.me/</loc></url>\n'
+        "</urlset>\n",
+        encoding="utf-8",
+    )
+    (html_dir / "404").mkdir()
+    (html_dir / "404" / "index.html").write_text("<html>404</html>", encoding="utf-8")
+
+    posts = {
+        "post-ok": ("已有静态文件的文章", "2026-07-01"),
+        "post-missing": ("静态文件缺失的文章", "2026-07-02"),
+        "post-dup-a": ("重复标题文章", "2026-07-03"),
+        "post-dup-b": ("重复标题文章", "2026-07-04"),
+    }
+    post_html = {}
+    for post_id, (title, date) in posts.items():
+        content = _make_post_html(title, date, content_extra=post_id)
+        post_html[post_id] = content
+        post_dir = html_dir / "posts" / post_id
+        post_dir.mkdir(parents=True)
+        (post_dir / "index.html").write_text(content, encoding="utf-8")
+
+    # 只给post-ok真正生成canonical静态文件——跟fetch_blog.py的render_post()
+    # 行为一致：static_target存在时两份文件字节完全一致。
+    ok_canonical_dir = html_dir / "2026" / "07"
+    ok_canonical_dir.mkdir(parents=True)
+    (ok_canonical_dir / "post-ok-slug.html").write_text(post_html["post-ok"], encoding="utf-8")
+
+    hrefs = {
+        "post-ok": "/2026/07/post-ok-slug.html",
+        "post-missing": "/2026/08/missing-slug.html",
+        "post-dup-a": "/2026/09/dup-a-slug.html",
+        "post-dup-b": "/2026/09/dup-b-slug.html",
+    }
+
+    def li_fallback(post_id):
+        title = posts[post_id][0]
+        return (f'<li><a href="{hrefs[post_id]}" target="_blank" rel="noopener">{title}</a> '
+                f'<span class="date">{posts[post_id][1]}</span></li>')
+
+    def li_rank(post_id, unit):
+        title = posts[post_id][0]
+        return f'<li><a href="{hrefs[post_id]}" target="_blank" rel="noopener">{title}</a>（1 {unit}）</li>'
+
+    fallback_items = "\n".join(li_fallback(pid) for pid in posts)
+    top_clicked_html = "\n".join(li_rank(pid, "次浏览") for pid in ("post-ok", "post-missing"))
+    top_downloaded_html = "\n".join(li_rank(pid, "次下载") for pid in ("post-dup-a", "post-dup-b"))
+
+    index_html = (
+        "<html><body>"
+        '<div class="leaderboard">'
+        "<h3>🔥 点击排行榜</h3>"
+        f"<ol>{top_clicked_html}</ol>"
+        "<h3>📥 下载排行榜</h3>"
+        f"<ol>{top_downloaded_html}</ol>"
+        "</div>"
+        '<div id="app"></div>'
+        '<script src="/static/index.js"></script>'
+        "</body></html>"
+    ).replace('<div id="app"></div>', f'<div id="app"><ul id="fallback-list">{fallback_items}</ul></div>')
+    (html_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+    return html_dir, hrefs, posts
+
+
+def with_href_fix_fixture(fn):
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_hreffix_test_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html, hrefs, posts = _make_fixture_html_dir_for_href_fix(tmp)
+    publish_build.HTML_DIR = fixture_html
+    output_dir = tmp / "publish_out"
+    try:
+        fn(tmp, output_dir, hrefs, posts)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _hrefs_in(html_text):
+    import re
+    return re.findall(r'href="([^"]+)"', html_text)
+
+
+def test_leaderboard_links_point_to_existing_files():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        # post-dup-a/post-dup-b标题不唯一，按设计有意保留成悬空链接
+        # （"不猜、不伪造"的已知代价），这里不重复断言它们，由
+        # test_ambiguous_title_href_left_unchanged_not_guessed专门覆盖。
+        known_ambiguous = {hrefs["post-dup-a"], hrefs["post-dup-b"]}
+        lb_start = content.index('<div class="leaderboard">')
+        leaderboard_html = content[lb_start:content.index('<div id="app">')]
+        for href in _hrefs_in(leaderboard_html):
+            if href in known_ambiguous:
+                continue
+            target = out / href.lstrip("/")
+            check(f"排行榜链接指向真实存在的文件: {href}", target.exists())
+    with_href_fix_fixture(_run)
+
+
+def test_fallback_list_links_point_to_existing_files():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        known_ambiguous = {hrefs["post-dup-a"], hrefs["post-dup-b"]}
+        fb_start = content.index('id="fallback-list"')
+        fallback_html = content[fb_start:]
+        for href in _hrefs_in(fallback_html):
+            if href in known_ambiguous:
+                continue
+            target = out / href.lstrip("/")
+            check(f"fallback-list链接指向真实存在的文件: {href}", target.exists())
+    with_href_fix_fixture(_run)
+
+
+def test_no_dangling_canonical_article_href_anywhere_in_index_html():
+    """不局限于已知的两个区块——对整个index.html做一次全局扫描，确保
+    不存在任何"长得像canonical文章链接、但对应文件不存在"的href，
+    覆盖以后又多出第三个区块的情况。"""
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        dangling = []
+        for m in publish_build._ARTICLE_HREF_PATTERN.finditer(content):
+            href = m.group(1)
+            if not (out / href.lstrip("/")).exists():
+                dangling.append(href)
+        # post-dup-a/post-dup-b标题不唯一，按设计会被有意保留成悬空链接，
+        # 这是"不猜、不伪造"原则的已知代价，不算这个测试要拦截的问题。
+        unexpected = [h for h in dangling if h not in (hrefs["post-dup-a"], hrefs["post-dup-b"])]
+        check("除了已知的标题不唯一场景外，不应再出现悬空canonical文章链接",
+              unexpected == [], f"got {unexpected}")
+    with_href_fix_fixture(_run)
+
+
+def test_canonical_link_kept_when_static_file_exists():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("有canonical静态文件的文章，链接保持canonical地址不变",
+              hrefs["post-ok"] in content)
+    with_href_fix_fixture(_run)
+
+
+def test_missing_canonical_falls_back_to_posts_id():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("canonical静态文件不存在的文章，链接被修正为/posts/<id>/",
+              "/posts/post-missing/" in content)
+        check("修正后不应再残留指向不存在文件的原canonical链接",
+              hrefs["post-missing"] not in content)
+    with_href_fix_fixture(_run)
+
+
+def test_ambiguous_title_href_left_unchanged_not_guessed():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("标题重复(post-dup-a)时原href保留、不被伪造成任何/posts/<id>/",
+              hrefs["post-dup-a"] in content)
+        check("标题重复(post-dup-b)时原href保留、不被伪造成任何/posts/<id>/",
+              hrefs["post-dup-b"] in content)
+    with_href_fix_fixture(_run)
+
+
+def test_source_html_index_untouched_by_href_fix():
+    """确认这次改动只影响publish/index.html这份副本，html/index.html
+    这份mirror生产站自己用的原始文件不会被build_publish()写入/修改。"""
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        before = (publish_build.HTML_DIR / "index.html").read_bytes()
+        publish_build.build_publish("github.foxzen.me", out)
+        after = (publish_build.HTML_DIR / "index.html").read_bytes()
+        check("html/index.html字节内容未发生变化", before == after)
+    with_href_fix_fixture(_run)
+
+
+def test_non_article_links_untouched_by_href_fix():
+    def _run(tmp, out, hrefs, posts):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("pages-index.js脚本引用未被href修正逻辑误伤",
+              "/pages-index.js" in content)
+        # index.html本身在这份夹具里没有其他站内/外部链接，其余非文章链接
+        # 的"不会被误伤"由test_non_article_links_untouched_in_shared_fixture
+        # 用主夹具（含首页/图片/其他入口外部链接）另行覆盖。
+    with_href_fix_fixture(_run)
+
+
+def test_search_index_json_url_matches_fixed_index_html_href():
+    """search-index.json里_find_public_url()给出的url，跟index.html里
+    对应文章被修正后的href应该一致——两处用的是同一份真实性判断，
+    不应该出现"列表能点开、排行榜却指向别处"这种分裂。"""
+    def _run(tmp, out, hrefs, posts):
+        import publish_build, json
+        publish_build.build_publish("github.foxzen.me", out)
+        data = json.loads((out / "search-index.json").read_text(encoding="utf-8"))
+        url_by_id = {a["id"]: a["url"] for a in data["articles"]}
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("post-ok在index.html里的链接跟search-index.json一致",
+              url_by_id["post-ok"] in content)
+        check("post-missing在index.html里的链接跟search-index.json一致",
+              url_by_id["post-missing"] in content)
+    with_href_fix_fixture(_run)
+
+
+def _make_post_html_with_discuss_btn(title, date, own_permalink, body_extra=""):
+    """比_make_post_html()多带上discuss-btn——跟fetch_blog.py真实
+    DISCUSS_CTA_BLOCK结构一致，这是_fix_cross_post_content_links()
+    用来反查"这篇文章自己的Blogger permalink"的字段来源。"""
+    return (
+        f"<!DOCTYPE html><html><head><title>{title}</title></head><body>"
+        f"<h1>{title}</h1>"
+        f'<div class="meta">发布于 {date}</div>'
+        '<div class="tags"></div>'
+        f'<div class="content"><p>正文内容。{body_extra}</p></div>'
+        '<div class="discuss-cta">'
+        f'<a class="discuss-btn" href="{own_permalink}" target="_blank" rel="noopener">💬 到主站参与讨论</a>'
+        "</div>"
+        "</body></html>"
+    )
+
+
+def _make_fixture_html_dir_for_content_link_fix(tmp):
+    """专门测试"文章正文里指向本站另一篇文章的Blogger permalink"修正
+    (_fix_cross_post_content_links)的夹具，覆盖：
+
+    - post-a：正文里有一条"上一篇文章"链接，指向post-b自己的Blogger
+      permalink -> 应该被改写成post-b在当前host下的真实静态地址；
+    - post-b：有canonical静态文件（YYYY/MM/slug.html） -> 用来验证
+      两份拷贝(posts/<id>/index.html 和 canonical文件)修正后仍然
+      保持字节一致；
+    - post-c：正文里链接指向一个"不属于本站任何已抓取文章"的Blogger
+      permalink（模拟指向一篇未收录/已删除的文章，或纯外部博客）->
+      必须原样保留，不允许猜测替换；
+    - 每篇文章自己的discuss-btn必须在修正后依然是原始Blogger permalink。
+    """
+    html_dir = tmp / "html"
+    html_dir.mkdir()
+
+    (html_dir / "robots.txt").write_text(
+        "User-agent: *\nAllow: /\nSitemap: https://mirror.foxzen.me/sitemap.xml\n",
+        encoding="utf-8",
+    )
+    (html_dir / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<url><loc>https://mirror.foxzen.me/</loc></url>\n'
+        "</urlset>\n",
+        encoding="utf-8",
+    )
+    (html_dir / "404").mkdir()
+    (html_dir / "404" / "index.html").write_text("<html>404</html>", encoding="utf-8")
+    (html_dir / "index.html").write_text(
+        '<html><body><div id="app"></div><script src="/static/index.js"></script></body></html>',
+        encoding="utf-8",
+    )
+
+    permalink_a = "https://digatlas.blogspot.com/2026/06/post-a.html"
+    permalink_b = "https://digatlas.blogspot.com/2026/07/post-b.html"
+    permalink_unknown = "https://digatlas.blogspot.com/2020/01/no-longer-tracked-post.html"
+
+    content_a = _make_post_html_with_discuss_btn(
+        "文章A", "2026-06-01", permalink_a,
+        body_extra=(
+            f'继续阅读<a href="{permalink_b}" target="_blank">上一篇文章</a>，'
+            f'另外也可以看看<a href="{permalink_unknown}" target="_blank">这篇旧文</a>。'
+        ),
+    )
+    content_b = _make_post_html_with_discuss_btn("文章B", "2026-07-01", permalink_b)
+
+    (html_dir / "posts" / "post-a").mkdir(parents=True)
+    (html_dir / "posts" / "post-a" / "index.html").write_text(content_a, encoding="utf-8")
+    (html_dir / "posts" / "post-b").mkdir(parents=True)
+    (html_dir / "posts" / "post-b" / "index.html").write_text(content_b, encoding="utf-8")
+
+    # post-b有canonical静态文件，跟posts/post-b/index.html字节一致
+    # （复现fetch_blog.py render_post()的真实拷贝行为）。
+    b_canonical_dir = html_dir / "2026" / "07"
+    b_canonical_dir.mkdir(parents=True)
+    (b_canonical_dir / "post-b-slug.html").write_text(content_b, encoding="utf-8")
+
+    return html_dir, {
+        "permalink_a": permalink_a,
+        "permalink_b": permalink_b,
+        "permalink_unknown": permalink_unknown,
+    }
+
+
+def with_content_link_fix_fixture(fn):
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_contentlink_test_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html, permalinks = _make_fixture_html_dir_for_content_link_fix(tmp)
+    publish_build.HTML_DIR = fixture_html
+    output_dir = tmp / "publish_out"
+    try:
+        fn(tmp, output_dir, permalinks)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_cross_post_content_link_rewritten_to_real_url():
+    def _run(tmp, out, permalinks):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content_a = (out / "posts" / "post-a" / "index.html").read_text(encoding="utf-8")
+        check("post-a正文里指向post-b的Blogger permalink已被改写",
+              permalinks["permalink_b"] not in content_a)
+        check("post-a正文里的链接改写成post-b经_find_public_url()验证的真实地址",
+              "/2026/07/post-b-slug.html" in content_a)
+    with_content_link_fix_fixture(_run)
+
+
+def test_own_permalink_and_unknown_permalink_kept_unchanged():
+    def _run(tmp, out, permalinks):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content_a = (out / "posts" / "post-a" / "index.html").read_text(encoding="utf-8")
+        content_b = (out / "posts" / "post-b" / "index.html").read_text(encoding="utf-8")
+        check("正文里指向本站之外/未收录文章的permalink原样保留，不猜测",
+              permalinks["permalink_unknown"] in content_a)
+        check("post-b自己的Blogger permalink（discuss-btn）修正后依然是原始值",
+              f'href="{permalinks["permalink_b"]}"' in content_b)
+    with_content_link_fix_fixture(_run)
+
+
+def test_discuss_btn_never_rewritten():
+    def _run(tmp, out, permalinks):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content_a = (out / "posts" / "post-a" / "index.html").read_text(encoding="utf-8")
+        check('post-a自己的discuss-btn（class="discuss-btn"）保留原始Blogger permalink',
+              f'<a class="discuss-btn" href="{permalinks["permalink_a"]}"' in content_a)
+    with_content_link_fix_fixture(_run)
+
+
+def test_canonical_and_posts_copy_stay_identical_after_content_link_fix():
+    def _run(tmp, out, permalinks):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        posts_copy = (out / "posts" / "post-b" / "index.html").read_bytes()
+        canonical_copy = (out / "2026" / "07" / "post-b-slug.html").read_bytes()
+        check("修正后posts/<id>/index.html和canonical静态文件仍然字节级一致",
+              posts_copy == canonical_copy)
+    with_content_link_fix_fixture(_run)
+
+
+def test_github_and_cloudflare_builds_get_same_root_relative_link():
+    """github.foxzen.me和cf.foxzen.me的CNAME/robots/sitemap域名不同，但
+    文章内链接本身是根相对路径（跟_href_for()/_find_public_url()一直以来
+    的做法一致），同一个根相对路径在两个host各自的CNAME下自然分别解析成
+    github.foxzen.me和cf.foxzen.me——两个host不需要生成不同的链接文本，
+    这里验证两次构建产出的内链文本本身相同，CNAME各自正确。"""
+    def _run(tmp, out, permalinks):
+        import publish_build
+        out_gh = tmp / "publish_gh"
+        out_cf = tmp / "publish_cf"
+        publish_build.build_publish("github.foxzen.me", out_gh)
+        publish_build.build_publish("cf.foxzen.me", out_cf)
+        content_gh = (out_gh / "posts" / "post-a" / "index.html").read_text(encoding="utf-8")
+        content_cf = (out_cf / "posts" / "post-a" / "index.html").read_text(encoding="utf-8")
+        check("GitHub构建的CNAME是github.foxzen.me",
+              (out_gh / "CNAME").read_text(encoding="utf-8").strip() == "github.foxzen.me")
+        check("Cloudflare构建的CNAME是cf.foxzen.me",
+              (out_cf / "CNAME").read_text(encoding="utf-8").strip() == "cf.foxzen.me")
+        check("两个host构建出的正文交叉引用链接文本完全一致（都是根相对路径）",
+              content_gh == content_cf)
+        check("交叉引用链接已经指向post-b的真实静态地址（根相对路径，随所在host解析）",
+              "/2026/07/post-b-slug.html" in content_gh)
+    with_content_link_fix_fixture(_run)
+
+
+def test_source_html_posts_untouched_by_content_link_fix():
+    def _run(tmp, out, permalinks):
+        import publish_build
+        before_a = (publish_build.HTML_DIR / "posts" / "post-a" / "index.html").read_bytes()
+        before_b = (publish_build.HTML_DIR / "posts" / "post-b" / "index.html").read_bytes()
+        publish_build.build_publish("github.foxzen.me", out)
+        after_a = (publish_build.HTML_DIR / "posts" / "post-a" / "index.html").read_bytes()
+        after_b = (publish_build.HTML_DIR / "posts" / "post-b" / "index.html").read_bytes()
+        check("html/posts/post-a/index.html源文件字节未变", before_a == after_a)
+        check("html/posts/post-b/index.html源文件字节未变", before_b == after_b)
+    with_content_link_fix_fixture(_run)
+
+
 def with_fixture(fn):
     import publish_build
     tmp = Path(tempfile.mkdtemp(prefix="publish_build_test_"))
@@ -541,6 +975,21 @@ def main():
         test_no_unexpected_db_or_secret_file_anywhere_in_output,
         test_output_dir_is_rebuilt_not_appended,
         test_real_local_html_dir_builds_without_error,
+        test_leaderboard_links_point_to_existing_files,
+        test_fallback_list_links_point_to_existing_files,
+        test_no_dangling_canonical_article_href_anywhere_in_index_html,
+        test_canonical_link_kept_when_static_file_exists,
+        test_missing_canonical_falls_back_to_posts_id,
+        test_ambiguous_title_href_left_unchanged_not_guessed,
+        test_source_html_index_untouched_by_href_fix,
+        test_non_article_links_untouched_by_href_fix,
+        test_search_index_json_url_matches_fixed_index_html_href,
+        test_cross_post_content_link_rewritten_to_real_url,
+        test_own_permalink_and_unknown_permalink_kept_unchanged,
+        test_discuss_btn_never_rewritten,
+        test_canonical_and_posts_copy_stay_identical_after_content_link_fix,
+        test_github_and_cloudflare_builds_get_same_root_relative_link,
+        test_source_html_posts_untouched_by_content_link_fix,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

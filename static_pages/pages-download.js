@@ -11,10 +11,13 @@
 // 同源相对路径fetch()，不出现任何绝对域名，天然只会请求当前这个Pages
 // 域名自己的文件，不需要也不应该判断当前具体是哪一个Pages部署域名。
 //
-// 顶部的safeTagFilename/zipArcnameForArticle是不依赖DOM的纯函数，可以在
-// Node里直接require测试（见test_publish_build.py），跟publish_build.py里
-// 的_safe_tag_filename()/_zip_arcname_for_article()保持规则一致——两边是
-// 各自独立实现，不是共享代码，一致性靠双边回归测试互相印证。
+// 顶部的safeTagFilename/safeArticleFilename/zipArcnameForArticle/
+// dedupeZipArcname是不依赖DOM的纯函数，可以在Node里直接require测试
+// （见test_publish_build.py），跟publish_build.py里的_safe_tag_filename()/
+// _safe_article_filename()/_zip_arcname_for_article()/_dedupe_zip_arcname()
+// 保持规则一致——两边是各自独立实现，不是共享代码，一致性靠双边回归测试
+// 互相印证。这几条规则本身又都跟app.py::_safe_filename()/_zip_arcname_for()
+// （mirror"导出离线版"用的真实命名规则）对齐，不是本轮自创的清洗规则。
 
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) {
@@ -31,12 +34,37 @@
     return name || "untitled";
   }
 
+  // 跟app.py::_safe_filename()、publish_build.py::_safe_article_filename()
+  // 逐条对齐的纯字符串清洗规则（字符类/去空白/截断80字符全部一致）。
+  function safeArticleFilename(title) {
+    var name = String(title).replace(/[\\/:*?"<>|]/g, "_").trim();
+    name = name.replace(/\s+/g, " ");
+    name = name.slice(0, 80);
+    return name || "untitled";
+  }
+
+  // 跟app.py::_zip_arcname_for()/publish_build.py::_zip_arcname_for_article()
+  // 保持一致的命名规则：canonical地址(/YYYY/MM/slug.html)直接保留斜杠，在zip
+  // 里就是真实的YYYY/MM子目录，不拍平；解析不出canonical（只有/posts/<id>/
+  // 这种fallback地址）时退回safeArticleFilename(标题)，不用post_id当最终
+  // 用户看到的文件名。只返回"理想"文件名，碰撞消解交给dedupeZipArcname()。
   function zipArcnameForArticle(article) {
     var url = String(article.url || "").replace(/^\/+/, "");
     if (url.slice(-5) === ".html") {
-      return url.slice(0, -5).replace(/\//g, "-") + ".html";
+      return url;
     }
-    return article.id + ".html";
+    return safeArticleFilename(article.title) + ".html";
+  }
+
+  // 跟app.py::_zip_arcname_for()里的碰撞消解规则完全一致：撞名时在扩展名前
+  // 插入"-{postId}"（postId天然全局唯一），不静默覆盖。
+  function dedupeZipArcname(name, postId, usedNames) {
+    if (usedNames[name]) {
+      var dot = name.lastIndexOf(".");
+      name = name.slice(0, dot) + "-" + postId + name.slice(dot);
+    }
+    usedNames[name] = true;
+    return name;
   }
 
   function getSelectedPostIds() {
@@ -97,9 +125,7 @@
       if (!article || !article.standalone_url) { missing.push(postIds[i]); continue; }
       try {
         var buf = await fetchAsArrayBuffer(article.standalone_url);
-        var name = zipArcnameForArticle(article);
-        if (usedNames[name]) name = article.id + ".html";
-        usedNames[name] = true;
+        var name = dedupeZipArcname(zipArcnameForArticle(article), article.id, usedNames);
         zip.file(name, buf);
       } catch (e) {
         missing.push(postIds[i]);
@@ -206,7 +232,9 @@
 
   return {
     safeTagFilename: safeTagFilename,
+    safeArticleFilename: safeArticleFilename,
     zipArcnameForArticle: zipArcnameForArticle,
+    dedupeZipArcname: dedupeZipArcname,
     initPagesDownload: initPagesDownload,
   };
 });

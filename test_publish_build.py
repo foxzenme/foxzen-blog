@@ -1135,6 +1135,75 @@ def with_download_fixture(fn):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# standalone zip里文章条目命名规则(_zip_arcname_for_article/_dedupe_zip_arcname)
+# 专用夹具：跟mirror app.py::_zip_arcname_for()对齐，需要同时覆盖
+# canonical(YYYY/MM/slug.html)、fallback(标题清洗)、撞名消解三种场景，
+# 跟_make_download_fixture_html_dir()（只有fallback场景）独立，不互相影响。
+# 四篇文章标题固定"发布于 2026-08-01"（同日期），_build_search_index()按
+# 日期降序做稳定排序，同日期时保留posts/目录名字典序——四个目录名刻意按
+# post-canon < post-collide-a < post-collide-b < post-fallback排列，
+# 让处理顺序（因而撞名消解的先后）完全确定，不依赖随机性。
+# ---------------------------------------------------------------------------
+
+def _make_arcname_fixture_html_dir(tmp):
+    html_dir = tmp / "html"
+    html_dir.mkdir()
+    (html_dir / "index.html").write_text(
+        '<html><body><div id="app"></div>'
+        '<script src="/static/index.js"></script>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (html_dir / "robots.txt").write_text(
+        "User-agent: *\nAllow: /\nSitemap: https://mirror.foxzen.me/sitemap.xml\n", encoding="utf-8")
+    (html_dir / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<url><loc>https://mirror.foxzen.me/</loc></url>\n</urlset>\n',
+        encoding="utf-8",
+    )
+    (html_dir / "404").mkdir()
+    (html_dir / "404" / "index.html").write_text("<html>404</html>", encoding="utf-8")
+
+    posts = [
+        ("post-canon", "带Canonical的文章", True),
+        ("post-collide-a", "撞名文章", False),
+        ("post-collide-b", "撞名文章", False),
+        ("post-fallback", "无Canonical回退文章", False),
+    ]
+    for post_id, title, has_canonical in posts:
+        post_html = _make_download_post_html(
+            post_id, title, ["ArcnameTag"],
+            f"https://digatlas.blogspot.com/2026/08/{post_id}.html")
+        post_dir = html_dir / "posts" / post_id
+        post_dir.mkdir(parents=True)
+        (post_dir / "index.html").write_text(post_html, encoding="utf-8")
+        media_dir = post_dir / "media"
+        media_dir.mkdir()
+        (media_dir / "pic.png").write_bytes(b"\x89PNG-fake-bytes-for-test")
+        if has_canonical:
+            canonical_dir = html_dir / "2026" / "08"
+            canonical_dir.mkdir(parents=True, exist_ok=True)
+            (canonical_dir / "my-canonical-slug.html").write_text(post_html, encoding="utf-8")
+
+    return html_dir
+
+
+def with_arcname_fixture(fn):
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_arcname_test_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html = _make_arcname_fixture_html_dir(tmp)
+    publish_build.HTML_DIR = fixture_html
+    output_dir = tmp / "publish_out"
+    try:
+        fn(tmp, output_dir)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_standalone_html_generated_for_every_article():
     def _run(tmp, out):
         import publish_build
@@ -1218,6 +1287,112 @@ def test_export_tag_zip_only_contains_matching_tag_articles():
             check("两篇文章都属于Firefox标签时zip包含2篇（有意的重叠，不去重）",
                   len(zf.namelist()) == 2, f"got {zf.namelist()}")
     with_download_fixture(_run)
+
+
+# ---------------------------------------------------------------------------
+# export-all.zip / export-tag/*.zip 内部文章条目命名——跟mirror
+# app.py::_zip_arcname_for()对齐：canonical文章用真实YYYY/MM/slug.html目录
+# 结构，fallback文章用清洗后的标题，都不直接暴露post_id；撞名时用
+# -{post_id}消解，不静默覆盖。用上面的with_arcname_fixture()验证。
+# ---------------------------------------------------------------------------
+
+def test_export_all_zip_uses_year_month_directory_for_canonical_articles():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            names = zf.namelist()
+            check("有canonical地址的文章用YYYY/MM/slug.html目录结构",
+                  "2026/08/my-canonical-slug.html" in names, f"got {names}")
+            check("不再是拍平的YYYY-MM-slug.html", "2026-08-my-canonical-slug.html" not in names)
+    with_arcname_fixture(_run)
+
+
+def test_export_all_zip_filenames_not_raw_post_id():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            names = zf.namelist()
+            for post_id in ("post-canon", "post-collide-a", "post-fallback"):
+                check(f"文件名不直接是post_id: {post_id}",
+                      f"{post_id}.html" not in names, f"got {names}")
+            check("没有canonical的文章用清洗后的标题命名",
+                  "无Canonical回退文章.html" in names, f"got {names}")
+    with_arcname_fixture(_run)
+
+
+def test_export_all_zip_title_filename_matches_safe_filename_rule():
+    """fallback文件名必须跟_safe_article_filename()（对齐app.py::
+    _safe_filename()）算出来的结果完全一致，不是另一套规则。"""
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        expected = publish_build._safe_article_filename("无Canonical回退文章") + ".html"
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            check("fallback文件名跟_safe_article_filename()算出的结果一致",
+                  expected in zf.namelist(), f"expected {expected!r}, got {zf.namelist()}")
+    with_arcname_fixture(_run)
+
+
+def test_export_all_zip_no_silent_filename_collision():
+    """两篇标题完全相同(都没有canonical地址)的文章，必须都出现在zip里，
+    用不同的最终文件名——不能因为撞名互相覆盖丢内容。"""
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            names = zf.namelist()
+            colliding = [n for n in names if n.startswith("撞名文章")]
+            check("撞名的两篇文章都在zip里，各自占一个不同文件名",
+                  len(colliding) == 2 and len(set(colliding)) == 2, f"got {colliding}")
+            check("其中一个是原名，另一个带post_id消解后缀",
+                  "撞名文章.html" in colliding and "撞名文章-post-collide-b.html" in colliding,
+                  f"got {colliding}")
+    with_arcname_fixture(_run)
+
+
+def test_export_tag_zip_uses_same_naming_structure():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        tag_zip = out / "downloads" / "export-tag" / "ArcnameTag.zip"
+        check("对应标签zip存在", tag_zip.exists())
+        with zipfile.ZipFile(tag_zip) as zf:
+            names = zf.namelist()
+            check("export-tag/*.zip里canonical文章也用YYYY/MM/slug.html",
+                  "2026/08/my-canonical-slug.html" in names, f"got {names}")
+            check("export-tag/*.zip里没有裸post_id文件名",
+                  not any(n.startswith("post-") and n.endswith(".html") for n in names), f"got {names}")
+            check("export-tag/*.zip里同样正确消解了撞名",
+                  "撞名文章.html" in names and "撞名文章-post-collide-b.html" in names, f"got {names}")
+    with_arcname_fixture(_run)
+
+
+def test_export_all_zip_arcnames_have_no_path_traversal_or_absolute_path():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            for name in zf.namelist():
+                check(f"zip条目名不含'..': {name}", ".." not in name.split("/"))
+                check(f"zip条目名不是绝对路径: {name}", not name.startswith("/"))
+    with_arcname_fixture(_run)
+
+
+def test_export_all_zip_still_contains_correct_standalone_html_content():
+    """改的只是zip里的文件名/目录结构，内容本身必须仍然是_render_standalone_
+    html()生成的正确standalone HTML（图片base64内联、GA/完读脚本已剥离），
+    不能因为改命名规则顺带改坏了内容。"""
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            content = zf.read("2026/08/my-canonical-slug.html").decode("utf-8")
+            check("archive内仍是base64内联后的standalone内容", "data:image/png;base64," in content)
+            check("archive内容已剥离GA脚本块", "GA_START" not in content and "ga_tracking_code" not in content)
+            check("archive内容已剥离完读脚本块", "FINISH_READ_START" not in content)
+    with_arcname_fixture(_run)
 
 
 def test_verify_publish_hard_fails_when_standalone_missing():
@@ -1313,19 +1488,32 @@ def test_pages_download_js_no_absolute_domains_or_cdn():
 
 
 def test_python_and_js_tag_filename_sanitization_agree_on_python_side():
-    """publish_build.py::_safe_tag_filename()和pages-download.js里
-    safeTagFilename()的清洗规则必须完全一致，否则浏览器现场拼的下载URL
-    会跟构建时生成的zip文件名对不上。两边各自独立实现（不共享代码），
-    一致性靠这里和test_pages_download_js_pure_functions_via_node()
-    用同一批输入分别断言同一个期望值来间接印证。"""
+    """publish_build.py和pages-download.js里的文件名清洗/命名规则必须完全
+    一致，否则浏览器现场拼的下载文件名会跟构建时生成的zip条目名对不上。
+    两边各自独立实现（不共享代码），一致性靠这里和
+    test_pages_download_js_pure_functions_via_node()用同一批输入分别断言
+    同一个期望值来间接印证。这几条规则本身又是跟app.py::_safe_filename()/
+    _zip_arcname_for()对齐的（见publish_build.py里的说明注释），不是本轮
+    自创的清洗规则。"""
     import publish_build
-    check("Python: 特殊字符清洗", publish_build._safe_tag_filename('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j")
+    check("Python: 特殊字符清洗(标签)", publish_build._safe_tag_filename('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j")
     check("Python: 逗号中文标签原样保留",
           publish_build._safe_tag_filename("理念，备份方式，计算机知识") == "理念，备份方式，计算机知识")
-    check("Python: zip条目名(canonical地址)",
-          publish_build._zip_arcname_for_article({"id": "x", "url": "/2026/08/slug.html"}) == "2026-08-slug.html")
-    check("Python: zip条目名(fallback地址)",
-          publish_build._zip_arcname_for_article({"id": "post-x", "url": "/posts/post-x/"}) == "post-x.html")
+    check("Python: 特殊字符清洗(文章标题)",
+          publish_build._safe_article_filename('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j")
+    check("Python: 文章标题超过80字符会被截断",
+          publish_build._safe_article_filename("啊" * 100) == "啊" * 80)
+    check("Python: 空标题回退成untitled", publish_build._safe_article_filename("   ") == "untitled")
+    check("Python: zip条目名(canonical地址)——保留YYYY/MM目录结构，不拍平",
+          publish_build._zip_arcname_for_article({"id": "x", "url": "/2026/08/slug.html", "title": "无关"}) == "2026/08/slug.html")
+    check("Python: zip条目名(fallback地址)——用标题而不是post_id",
+          publish_build._zip_arcname_for_article({"id": "post-x", "url": "/posts/post-x/", "title": "回退标题"}) == "回退标题.html")
+    used = set()
+    first = publish_build._dedupe_zip_arcname("撞名文章.html", "post-a", used)
+    second = publish_build._dedupe_zip_arcname("撞名文章.html", "post-b", used)
+    check("Python: 撞名消解——第一个保留原名", first == "撞名文章.html")
+    check("Python: 撞名消解——第二个在扩展名前插入post_id", second == "撞名文章-post-b.html")
+    check("Python: 撞名消解——两次结果不相同(不静默覆盖)", first != second)
 
 
 def test_pages_download_js_pure_functions_via_node():
@@ -1341,13 +1529,23 @@ def test_pages_download_js_pure_functions_via_node():
     console.log("safe_tag_basic", P.safeTagFilename("Firefox") === "Firefox");
     console.log("safe_tag_special_chars", P.safeTagFilename('a/b\\\\c:d*e?f"g<h>i|j') === "a_b_c_d_e_f_g_h_i_j");
     console.log("safe_tag_comma_chinese", P.safeTagFilename("理念，备份方式，计算机知识") === "理念，备份方式，计算机知识");
-    console.log("arcname_canonical", P.zipArcnameForArticle({{id:"x", url:"/2026/08/slug.html"}}) === "2026-08-slug.html");
-    console.log("arcname_fallback", P.zipArcnameForArticle({{id:"post-x", url:"/posts/post-x/"}}) === "post-x.html");
+    console.log("safe_article_special_chars", P.safeArticleFilename('a/b\\\\c:d*e?f"g<h>i|j') === "a_b_c_d_e_f_g_h_i_j");
+    console.log("safe_article_truncated", P.safeArticleFilename("啊".repeat(100)) === "啊".repeat(80));
+    console.log("safe_article_empty", P.safeArticleFilename("   ") === "untitled");
+    console.log("arcname_canonical", P.zipArcnameForArticle({{id:"x", url:"/2026/08/slug.html", title:"无关"}}) === "2026/08/slug.html");
+    console.log("arcname_fallback", P.zipArcnameForArticle({{id:"post-x", url:"/posts/post-x/", title:"回退标题"}}) === "回退标题.html");
+    const used = {{}};
+    const first = P.dedupeZipArcname("撞名文章.html", "post-a", used);
+    const second = P.dedupeZipArcname("撞名文章.html", "post-b", used);
+    console.log("dedupe_first_unchanged", first === "撞名文章.html");
+    console.log("dedupe_second_disambiguated", second === "撞名文章-post-b.html");
     """
     out = _run_node(snippet)
     lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
     for name in ("safe_tag_basic", "safe_tag_special_chars", "safe_tag_comma_chinese",
-                 "arcname_canonical", "arcname_fallback"):
+                 "safe_article_special_chars", "safe_article_truncated", "safe_article_empty",
+                 "arcname_canonical", "arcname_fallback",
+                 "dedupe_first_unchanged", "dedupe_second_disambiguated"):
         check(f"pages-download.js真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
 
 
@@ -1436,6 +1634,13 @@ def main():
         test_blog_full_zip_contains_original_articles_and_index,
         test_export_all_zip_contains_standalone_versions_not_raw,
         test_export_tag_zip_only_contains_matching_tag_articles,
+        test_export_all_zip_uses_year_month_directory_for_canonical_articles,
+        test_export_all_zip_filenames_not_raw_post_id,
+        test_export_all_zip_title_filename_matches_safe_filename_rule,
+        test_export_all_zip_no_silent_filename_collision,
+        test_export_tag_zip_uses_same_naming_structure,
+        test_export_all_zip_arcnames_have_no_path_traversal_or_absolute_path,
+        test_export_all_zip_still_contains_correct_standalone_html_content,
         test_verify_publish_hard_fails_when_standalone_missing,
         test_verify_publish_hard_fails_when_fixed_zip_missing,
         test_verify_publish_hard_fails_when_tag_zip_missing,

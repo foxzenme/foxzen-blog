@@ -438,7 +438,8 @@ _UPDATED_PRECISE_RE = re.compile(r"最后修改：([^·<]+)")
 # 这种标签），拿去做zip文件名之前必须清洗——字符类跟app.py::_safe_filename()
 # 完全一致，pages-download.js里的safeTagFilename()也要跟这条规则严格对齐，
 # 否则浏览器现场拼的URL和构建时生成的文件名会对不上（互相印证靠两边各自的
-# 回归测试，见test_publish_build.py）。
+# 回归测试，见test_publish_build.py）。同一份字符类下面_safe_article_filename()
+# 也复用——跟app.py::_safe_filename()是同一条SAFE_FILENAME_RE。
 _TAG_FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
 
 
@@ -446,6 +447,18 @@ def _safe_tag_filename(tag: str) -> str:
     name = _TAG_FILENAME_UNSAFE_RE.sub("_", tag).strip()
     name = re.sub(r"\s+", " ", name)
     return name or "untitled"
+
+
+def _safe_article_filename(title: str, max_len: int = 80) -> str:
+    """跟app.py::_safe_filename()逐行对齐的纯字符串清洗规则（字符类/去空白/
+    截断长度全部一致），故意不import app.py复用——那样会把Flask整条依赖链
+    拖进这个明确设计成"不依赖Flask/DB"的构建脚本（见文件头docstring）。
+    两边各自独立实现，一致性靠test_publish_build.py的回归测试互相印证，
+    跟_safe_tag_filename/pages-download.js::safeTagFilename()是同一个思路。
+    """
+    name = _TAG_FILENAME_UNSAFE_RE.sub("_", title).strip()
+    name = re.sub(r"\s+", " ", name)
+    return name[:max_len] if name else "untitled"
 
 
 def _inline_media_as_base64(html_text: str, post_id: str, media_dir: Path) -> str:
@@ -539,13 +552,39 @@ def _media_files_for(output_dir: Path, post_id: str) -> list:
 
 
 def _zip_arcname_for_article(article: dict) -> str:
-    """跟pages-download.js里的zipArcnameForArticle()保持一致的命名规则：
-    优先用canonical地址拼出人类可读的文件名（2026-08-slug.html），解析不出
-    （只有/posts/<id>/这种fallback地址）时退回post_id命名。"""
+    """standalone(base64内联)zip里每篇文章的条目名，规则跟app.py::
+    _zip_arcname_for()完全对齐（mirror"导出离线版"用的就是这个函数）：
+    优先用canonical地址对应的真实 年/月/slug.html 目录结构——直接保留
+    "/"，在zip里就是真实的YYYY/MM/子目录，不拍平成"YYYY-MM-slug.html"；
+    article["url"]在这里等价于app.py那边的db.get_canonical_path()，因为
+    _find_public_url()生成它时用的就是同一份已经存在的canonical静态文件
+    （见_find_public_url()的字节内容比对）。
+
+    解析不出canonical（只有/posts/<id>/这种fallback地址）时，退回
+    _safe_article_filename(标题)——不用post_id当最终用户看到的文件名，
+    这一点也是跟app.py::_zip_arcname_for()对齐的关键行为：mirror那边同样
+    的情况下退回_safe_filename(_get_title(post_id))，不是post_id本身。
+
+    这里只返回"理想"文件名，不处理碰撞——碰撞消解统一交给
+    _dedupe_zip_arcname()，跟app.py::_zip_arcname_for()把两件事拆开、
+    但_write_standalone_zip()里合起来调用是同一个思路。pages-download.js
+    里的zipArcnameForArticle()是同一套规则的JS镜像实现。
+    """
     url = article["url"].lstrip("/")
     if url.endswith(".html"):
-        return url[:-len(".html")].replace("/", "-") + ".html"
-    return f"{article['id']}.html"
+        return url
+    return _safe_article_filename(article.get("title") or "") + ".html"
+
+
+def _dedupe_zip_arcname(name: str, post_id: str, used_names: set) -> str:
+    """跟app.py::_zip_arcname_for()里的碰撞消解规则完全一致：撞名时在扩展名
+    前插入"-{post_id}"（post_id天然全局唯一，不会自己再跟别的文章撞），
+    不静默覆盖——两个不同的文章绝不会产出同一个最终归档文件名。"""
+    if name in used_names:
+        base, ext = name.rsplit(".", 1)
+        name = f"{base}-{post_id}.{ext}"
+    used_names.add(name)
+    return name
 
 
 # zipfile.ZipFile.write()默认按源文件的mtime写入zip条目时间戳，会导致
@@ -602,10 +641,7 @@ def _build_fixed_scope_zips(output_dir: Path, articles: list) -> None:
                 standalone_file = standalone_dir / f"{article['id']}.html"
                 if not standalone_file.exists():
                     continue
-                name = _zip_arcname_for_article(article)
-                if name in used_names:
-                    name = f"{article['id']}.html"
-                used_names.add(name)
+                name = _dedupe_zip_arcname(_zip_arcname_for_article(article), article["id"], used_names)
                 _zip_write_bytes(zf, standalone_file.read_bytes(), name)
 
     _write_standalone_zip(downloads_dir / "export-all.zip", articles)

@@ -445,12 +445,24 @@ def _download_filename_for(post_id: str) -> str:
 
 
 def _zip_arcname_for(post_id: str, used_names: set) -> str:
-    """zip内部按真实 年/月/slug.html 文件夹结构命名。"""
-    canonical = db.get_canonical_path(post_id)
-    if canonical:
-        name = canonical + ".html"
+    """离线版(base64内联)归档内的条目路径：年/月/<安全标题>.html。
+
+    年/月来自这篇文章的发布日期(posts.published，"YYYY-MM-DD")，文件名来自
+    标题经_safe_filename()清洗——不再用canonical_path/Blogger slug拼路径。
+    "网页canonical URL存不存在"和"下载归档内部文件名应该是什么"是两个独立
+    概念：canonical_path只影响/YYYY/MM/slug.html这个网页地址本身，跟用户
+    下载到本地后看到的归档文件名无关，即便某篇文章解析不出canonical_path
+    （permalink格式异常），归档命名依然按发布日期+标题稳定生成，不受影响。
+    """
+    published = _get_published(post_id)
+    safe_title = _safe_filename(_get_title(post_id))
+    if len(published) >= 7 and published[4] == "-":
+        name = f"{published[:4]}/{published[5:7]}/{safe_title}.html"
     else:
-        name = _safe_filename(_get_title(post_id)) + ".html"
+        # 发布日期缺失/格式异常的兜底：理论上不该发生（published在入库时
+        # 就已经是"YYYY-MM-DD"），发生了也不能让整个导出失败，退回不带
+        # 年/月的纯标题命名。
+        name = f"{safe_title}.html"
     if name in used_names:
         base, ext = name.rsplit(".", 1)
         name = f"{base}-{post_id}.{ext}"
@@ -552,6 +564,16 @@ def _get_title(post_id: str) -> str:
     row = conn.execute("SELECT title FROM posts WHERE post_id = ?", (post_id,)).fetchone()
     conn.close()
     return row["title"] if row else post_id
+
+
+def _get_published(post_id: str) -> str:
+    """posts.published是"YYYY-MM-DD"（只存年月日，完整时间戳排序另有
+    published_ts字段，见db.py注释），_zip_arcname_for()用它推导归档路径
+    里的年/月子目录。"""
+    conn = db.get_conn()
+    row = conn.execute("SELECT published FROM posts WHERE post_id = ?", (post_id,)).fetchone()
+    conn.close()
+    return (row["published"] if row else "") or ""
 
 
 @app.route("/api/export/base64", methods=["POST"])

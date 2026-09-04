@@ -44,16 +44,19 @@
   }
 
   // 跟app.py::_zip_arcname_for()/publish_build.py::_zip_arcname_for_article()
-  // 保持一致的命名规则：canonical地址(/YYYY/MM/slug.html)直接保留斜杠，在zip
-  // 里就是真实的YYYY/MM子目录，不拍平；解析不出canonical（只有/posts/<id>/
-  // 这种fallback地址）时退回safeArticleFilename(标题)，不用post_id当最终
-  // 用户看到的文件名。只返回"理想"文件名，碰撞消解交给dedupeZipArcname()。
+  // 保持一致的命名规则：年/月/<安全标题>.html——年/月来自article.date
+  // ("YYYY-MM-DD"，search-index.json里本来就有的发布日期字段，不是新增
+  // 字段)，文件名来自标题清洗，不用canonical地址/Blogger slug/post_id。
+  // "网页canonical URL存不存在"和"下载归档内部文件名应该是什么"是两个
+  // 独立概念，article.url(网页地址)在这里不参与归档命名。只返回"理想"
+  // 文件名，碰撞消解交给dedupeZipArcname()。
   function zipArcnameForArticle(article) {
-    var url = String(article.url || "").replace(/^\/+/, "");
-    if (url.slice(-5) === ".html") {
-      return url;
+    var date = String(article.date || "");
+    var safeTitle = safeArticleFilename(article.title);
+    if (date.length >= 7 && date.charAt(4) === "-") {
+      return date.slice(0, 4) + "/" + date.slice(5, 7) + "/" + safeTitle + ".html";
     }
-    return safeArticleFilename(article.title) + ".html";
+    return safeTitle + ".html";
   }
 
   // 跟app.py::_zip_arcname_for()里的碰撞消解规则完全一致：撞名时在扩展名前

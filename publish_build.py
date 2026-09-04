@@ -554,26 +554,31 @@ def _media_files_for(output_dir: Path, post_id: str) -> list:
 def _zip_arcname_for_article(article: dict) -> str:
     """standalone(base64内联)zip里每篇文章的条目名，规则跟app.py::
     _zip_arcname_for()完全对齐（mirror"导出离线版"用的就是这个函数）：
-    优先用canonical地址对应的真实 年/月/slug.html 目录结构——直接保留
-    "/"，在zip里就是真实的YYYY/MM/子目录，不拍平成"YYYY-MM-slug.html"；
-    article["url"]在这里等价于app.py那边的db.get_canonical_path()，因为
-    _find_public_url()生成它时用的就是同一份已经存在的canonical静态文件
-    （见_find_public_url()的字节内容比对）。
+    年/月/<安全标题>.html——年/月来自article["date"]（"YYYY-MM-DD"，跟
+    posts.published同一语义来源，都是_extract_post_metadata()从"发布于
+    YYYY-MM-DD"这行文本解析出来的），文件名来自标题清洗，不用
+    canonical地址/Blogger slug/post_id拼路径。
 
-    解析不出canonical（只有/posts/<id>/这种fallback地址）时，退回
-    _safe_article_filename(标题)——不用post_id当最终用户看到的文件名，
-    这一点也是跟app.py::_zip_arcname_for()对齐的关键行为：mirror那边同样
-    的情况下退回_safe_filename(_get_title(post_id))，不是post_id本身。
+    这里不再依赖article["url"]是不是canonical地址：'网页canonical URL
+    存不存在'（受_find_public_url()能否在output_dir里找到匹配的
+    /YYYY/MM/slug.html静态文件影响，本地html/快照没有这类文件时就是
+    fallback地址）和'下载归档内部文件名应该是什么'是两个独立概念——即使
+    当前html/快照完全没有canonical静态文件，归档命名依然按发布日期+标题
+    稳定生成，不受影响。
 
     这里只返回"理想"文件名，不处理碰撞——碰撞消解统一交给
     _dedupe_zip_arcname()，跟app.py::_zip_arcname_for()把两件事拆开、
     但_write_standalone_zip()里合起来调用是同一个思路。pages-download.js
     里的zipArcnameForArticle()是同一套规则的JS镜像实现。
     """
-    url = article["url"].lstrip("/")
-    if url.endswith(".html"):
-        return url
-    return _safe_article_filename(article.get("title") or "") + ".html"
+    date = article.get("date") or ""
+    safe_title = _safe_article_filename(article.get("title") or "")
+    if len(date) >= 7 and date[4] == "-":
+        return f"{date[:4]}/{date[5:7]}/{safe_title}.html"
+    # 发布日期缺失/格式异常的兜底：理论上不该发生（_extract_post_metadata()
+    # 解析不到日期时meta["date"]就是空字符串，属于源数据异常），发生了
+    # 也不能让整个构建失败，退回不带年/月的纯标题命名。
+    return f"{safe_title}.html"
 
 
 def _dedupe_zip_arcname(name: str, post_id: str, used_names: set) -> str:

@@ -70,3 +70,6 @@ data/blog.db-wal
 
 # Pages发布构建产物(由publish_build.py现场生成，不需要进Git)
 /publish/
+
+# 图片
+*.png   

@@ -21,18 +21,34 @@ _is_allowed_top_level_dir() 明确认可的内容才会被复制进 publish/，
     python3 publish_build.py --host cf.foxzen.me
 """
 import argparse
+import base64
 import html.parser
 import json
+import mimetypes
 import re
 import shutil
+import zipfile
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 HTML_DIR = BASE_DIR / "html"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "publish"
 PAGES_JS_SOURCE = BASE_DIR / "static_pages" / "pages-index.js"
+DOWNLOAD_JS_SOURCE = BASE_DIR / "static_pages" / "pages-download.js"
+# 固定版本的JSZip，随publish artifact一起发布，不在页面里引用任何CDN——
+# github.foxzen.me/cf.foxzen.me必须在VPS完全不可用时也能使用下载功能，
+# 运行时依赖外部CDN跟这个目标矛盾。这份文件是构建时一次性从上游下载后
+# 提交进仓库的"vendored"副本，不是页面运行时的网络依赖。
+JSZIP_VENDOR_SOURCE = BASE_DIR / "static_pages" / "vendor" / "jszip.min.js"
 
 MIRROR_ROOT_URL = "https://mirror.foxzen.me"
+
+# 首页品牌文案的唯一权威定义跟fetch_blog.py的INDEX_TEMPLATE保持字面一致——
+# 如果那边的品牌文案再改，这里也要同步改。之所以在这里单独重复一份常量
+# （而不是从fetch_blog.py导入），是因为publish_build.py明确设计成不依赖
+# fetch_blog.py/db.py（见文件头docstring："完全独立于data/blog.db"），
+# 只读取html/里已经生成好的静态文件本身。
+BRAND_HEADING = "狐斋志异 - 镜像站"
 
 # 明确允许原样复制的顶层文件（白名单）。不在这个列表里的顶层文件一律不进publish/。
 ALLOWED_TOP_LEVEL_FILES = {
@@ -46,6 +62,8 @@ ALLOWED_STATIC_DIR_NAMES = {"images", "posts"}
 
 INDEX_JS_SCRIPT_TAG = '<script src="/static/index.js"></script>'
 PAGES_JS_SCRIPT_TAG = '<script src="/pages-index.js"></script>'
+JSZIP_SCRIPT_TAG = '<script src="/jszip.min.js"></script>'
+DOWNLOAD_JS_SCRIPT_TAG = '<script src="/pages-download.js"></script>'
 
 # 插入到#app容器之前的纯静态搜索工具栏。data-role属性是pages-index.js
 # 读取表单值用的钩子，不涉及任何/api/*请求。
@@ -60,6 +78,23 @@ SEARCH_TOOLBAR_HTML = """<div id="pages-search-toolbar" style="margin-bottom:20p
 <option value="20">每页20篇</option>
 <option value="50">每页50篇</option>
 </select>
+</div>
+"""
+
+# 下载/离线导出工具栏，跟mirror首页的按钮排布保持一致的用户体验。全部
+# 五个都是<button>（不是<a>），触发逻辑由pages-download.js绑定：
+# 全站/全部导出直接跳转到构建时预生成的静态zip；按标签导出需要读当前
+# 标签筛选框的值现场拼URL；已勾选两个走JSZip浏览器端现场打包。
+# data-role是pages-download.js读取的钩子，不涉及任何/api/*请求。
+DOWNLOAD_TOOLBAR_HTML = """<div id="pages-download-toolbar" style="margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;">
+<div style="font-size:0.9em;color:#666;margin-bottom:8px;">下载 / 离线导出（完全由本站静态文件生成，不依赖任何其他服务器）</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<button type="button" data-role="download-all-btn">打包下载全站</button>
+<button type="button" data-role="download-selected-btn">下载已勾选</button>
+<button type="button" data-role="export-selected-btn">导出离线版(已勾选)</button>
+<button type="button" data-role="export-tag-btn">导出离线版(当前标签)</button>
+<button type="button" data-role="export-all-btn">导出离线版(全部)</button>
+</div>
 </div>
 """
 
@@ -230,14 +265,40 @@ def _fix_article_hrefs(content: str, output_dir: Path) -> str:
     return _ARTICLE_HREF_PATTERN.sub(_replace, content)
 
 
+_TITLE_TAG_PATTERN = re.compile(r"<title>.*?</title>", re.DOTALL)
+_H1_TAG_PATTERN = re.compile(r"<h1>.*?</h1>", re.DOTALL)
+
+
+def _normalize_brand_heading(content: str) -> str:
+    """把html/index.html顶部的<title>/<h1>规范化成当前品牌文案。
+
+    存在原因：html/是从生产服务器下载下来的静态快照，可能停留在
+    fetch_blog.py的INDEX_TEMPLATE品牌文案修改之前的旧版本（这个仓库里
+    发生过不止一次），而Pages构建流程明确设计成"只读html/现有内容，
+    不重新跑fetch_blog.py"（不依赖VPS/数据库）。如果不在这里补一步，
+    品牌文案改了代码却上不了线，除非专门重新在服务器上跑一次抓取。
+
+    只精确替换首页最前面那一个<title>/<h1>标签（count=1），不做全局
+    字符串替换——文章正文、其他区块如果碰巧提到品牌旧名字不受影响；
+    如果<title>/<h1>已经是当前品牌，替换结果跟原文完全一样，天然幂等。
+    """
+    content = _TITLE_TAG_PATTERN.sub(f"<title>{BRAND_HEADING}</title>", content, count=1)
+    content = _H1_TAG_PATTERN.sub(f"<h1>{BRAND_HEADING}</h1>", content, count=1)
+    return content
+
+
 def _build_index_html(host: str, output_dir: Path) -> str:
     content = (HTML_DIR / "index.html").read_text(encoding="utf-8")
+    content = _normalize_brand_heading(content)
     # 生产的static/index.js全靠/api/*，纯静态环境下必然失败，换成只做浏览器
     # 本地搜索/筛选/分页的pages-index.js（第十一节），并在#app前插入一个
     # 静态搜索工具栏——原有的服务端渲染fallback-list保留，JS加载完成后
     # 会在其基础上接管展示。
-    content = content.replace(INDEX_JS_SCRIPT_TAG, PAGES_JS_SCRIPT_TAG)
-    content = content.replace('<div id="app">', SEARCH_TOOLBAR_HTML + '<div id="app">')
+    content = content.replace(
+        INDEX_JS_SCRIPT_TAG,
+        PAGES_JS_SCRIPT_TAG + "\n" + JSZIP_SCRIPT_TAG + "\n" + DOWNLOAD_JS_SCRIPT_TAG,
+    )
+    content = content.replace('<div id="app">', SEARCH_TOOLBAR_HTML + DOWNLOAD_TOOLBAR_HTML + '<div id="app">')
     # 点击排行榜/下载排行榜/fallback-list三处都用_href_for()同一套逻辑生成
     # canonical链接，这里统一修正，不用区分是哪个区块。必须在html/的目录
     # （posts/、YYYY/等）已经复制进output_dir之后才能调用，见build_publish()
@@ -350,15 +411,230 @@ def _fix_cross_post_content_links(output_dir: Path) -> None:
             canonical_dup.write_text(new_content, encoding="utf-8")
 
 
-def _build_search_index(output_dir: Path) -> list:
+# ---------------------------------------------------------------------------
+# 离线standalone版本 + 固定范围（全站/全部/按标签）静态下载产物
+#
+# 只处理"构建时就已经知道范围"的三类：打包下载全站、导出离线版(全部)、
+# 导出离线版(按标签)——范围在构建时是有限、已知的集合，可以直接预生成
+# 静态文件。"下载已勾选"/"导出离线版(已勾选)"这两个是运行时任意组合，
+# 组合数是指数级的，不可能在构建时穷举，交给浏览器端pages-download.js
+# 用JSZip现场从已经公开的静态文件里现拼，见static_pages/pages-download.js。
+#
+# 这里的转换逻辑（剥GA/完读特效脚本块、图片base64内联、插入来源信息条）
+# 移植自app.py的_inline_post_as_base64()，但特意不import app.py——
+# 那样会把Flask整条依赖链拖进这个明确设计成"不依赖Flask/DB"的构建脚本。
+# 两边各自独立实现，唯一的联系是"逻辑意图一致"，不是共享代码，这是本轮
+# 明确的取舍（不为了100%代码复用而破坏publish_build.py的独立性）。
+# ---------------------------------------------------------------------------
+
+_GA_BLOCK_RE = re.compile(r"<!-- GA_START -->.*?<!-- GA_END -->\s*", re.DOTALL)
+_FINISH_READ_BLOCK_RE = re.compile(r"<!-- FINISH_READ_START -->.*?<!-- FINISH_READ_END -->\s*", re.DOTALL)
+_BACK_LINK_HTML = ('<a class="back" href="/" onclick="if (history.length > 1) '
+                    '{ history.back(); return false; }">&larr; 返回目录</a>')
+_META_PRECISE_RE = re.compile(r'<div class="meta-precise">(.*?)</div>')
+_UPDATED_PRECISE_RE = re.compile(r"最后修改：([^·<]+)")
+
+# 标签名可能含逗号、中文、空格（真实数据里出现过"理念，备份方式，计算机知识"
+# 这种标签），拿去做zip文件名之前必须清洗——字符类跟app.py::_safe_filename()
+# 完全一致，pages-download.js里的safeTagFilename()也要跟这条规则严格对齐，
+# 否则浏览器现场拼的URL和构建时生成的文件名会对不上（互相印证靠两边各自的
+# 回归测试，见test_publish_build.py）。
+_TAG_FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def _safe_tag_filename(tag: str) -> str:
+    name = _TAG_FILENAME_UNSAFE_RE.sub("_", tag).strip()
+    name = re.sub(r"\s+", " ", name)
+    return name or "untitled"
+
+
+def _inline_media_as_base64(html_text: str, post_id: str, media_dir: Path) -> str:
+    img_src_re = re.compile(rf'src="(?:/posts/{re.escape(post_id)}/)?media/([^"]+)"')
+
+    def _replace(m: re.Match) -> str:
+        filename = m.group(1)
+        file_path = media_dir / filename
+        if not file_path.exists():
+            return m.group(0)
+        mime, _ = mimetypes.guess_type(filename)
+        mime = mime or "application/octet-stream"
+        data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        return f'src="data:{mime};base64,{data}"'
+
+    return img_src_re.sub(_replace, html_text)
+
+
+def _standalone_source_note_html(source_url: str | None, updated: str) -> str:
+    updated_text = updated or "未知"
+    if source_url:
+        source_line = f'本文镜像自 <a href="{source_url}">{source_url}</a>'
+    else:
+        source_line = "本文镜像自主站（原始地址暂缺，请在主站搜索标题核对）"
+    return (
+        '<div style="border-bottom:1px solid #ddd;padding-bottom:12px;margin-bottom:20px;'
+        'font-size:0.85em;color:#666;">'
+        f'{source_line}<br>最后修改时间：{updated_text}'
+        '</div>'
+    )
+
+
+def _render_standalone_html(post_html: str, post_id: str, media_dir: Path) -> str:
+    """把一篇已经渲染好的posts/<id>/index.html转成离线单文件版：
+    图片base64内联、去掉GA/完读特效脚本块、去掉"返回目录"链接（离线文件
+    点它没有意义）、插入来源信息条。source_url/updated不查数据库，直接从
+    这篇文章自己的discuss-btn href和.meta-precise文本里解析——这两个值
+    本来就已经原样公开写在HTML里，不是需要额外权限才能拿到的信息。
+    """
+    html_text = _GA_BLOCK_RE.sub("", post_html)
+    html_text = _FINISH_READ_BLOCK_RE.sub("", html_text)
+    html_text = _inline_media_as_base64(html_text, post_id, media_dir)
+    html_text = html_text.replace(_BACK_LINK_HTML, "")
+
+    permalink_match = _OWN_PERMALINK_PATTERN.search(post_html)
+    source_url = permalink_match.group(1) if permalink_match else None
+    meta_precise_match = _META_PRECISE_RE.search(post_html)
+    updated = ""
+    if meta_precise_match:
+        updated_match = _UPDATED_PRECISE_RE.search(meta_precise_match.group(1))
+        if updated_match:
+            updated = updated_match.group(1).strip()
+
+    note = _standalone_source_note_html(source_url, updated)
+    if '<div class="content">' in html_text:
+        html_text = html_text.replace('<div class="content">', note + '<div class="content">', 1)
+    else:
+        html_text = note + html_text
+    return html_text
+
+
+def _build_standalone_articles(output_dir: Path) -> dict:
+    """给每篇文章生成一份standalone/<id>.html，返回{post_id: 根相对URL}。
+
+    必须在_fix_cross_post_content_links()之后调用——这样standalone版本里
+    "本站另一篇文章"的引用也是修正后的相对地址，不是残留的Blogger permalink。
+    """
+    posts_dir = output_dir / "posts"
+    if not posts_dir.exists():
+        return {}
+    standalone_dir = output_dir / "standalone"
+    standalone_dir.mkdir(parents=True, exist_ok=True)
+    result = {}
+    for post_dir in sorted(posts_dir.iterdir()):
+        index_file = post_dir / "index.html"
+        if not index_file.exists():
+            continue
+        post_id = post_dir.name
+        post_html = index_file.read_text(encoding="utf-8")
+        standalone_html = _render_standalone_html(post_html, post_id, post_dir / "media")
+        (standalone_dir / f"{post_id}.html").write_text(standalone_html, encoding="utf-8")
+        result[post_id] = f"/standalone/{post_id}.html"
+    return result
+
+
+def _media_files_for(output_dir: Path, post_id: str) -> list:
+    media_dir = output_dir / "posts" / post_id / "media"
+    if not media_dir.exists():
+        return []
+    return sorted(f.name for f in media_dir.iterdir() if f.is_file())
+
+
+def _zip_arcname_for_article(article: dict) -> str:
+    """跟pages-download.js里的zipArcnameForArticle()保持一致的命名规则：
+    优先用canonical地址拼出人类可读的文件名（2026-08-slug.html），解析不出
+    （只有/posts/<id>/这种fallback地址）时退回post_id命名。"""
+    url = article["url"].lstrip("/")
+    if url.endswith(".html"):
+        return url[:-len(".html")].replace("/", "-") + ".html"
+    return f"{article['id']}.html"
+
+
+# zipfile.ZipFile.write()默认按源文件的mtime写入zip条目时间戳，会导致
+# "内容完全一样、只是构建时刻不同"的两次构建产出字节不同的zip——直接违反
+# build_publish()文档开头就承诺的"同样的html/内容+同样的host参数 =>
+# 同样的publish/"可重复性。固定成一个常量时间戳，让zip的可重复性只取决于
+# 内容本身，不取决于构建发生的具体时刻。
+_ZIP_FIXED_DATE_TIME = (2020, 1, 1, 0, 0, 0)
+
+
+def _zip_write_bytes(zf: zipfile.ZipFile, data: bytes, arcname: str) -> None:
+    info = zipfile.ZipInfo(arcname, date_time=_ZIP_FIXED_DATE_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    # create_system/external_attr默认值依赖运行构建脚本的操作系统（Windows上
+    # 是0/0，Linux上create_system会自动变成3）——不显式设置的话，同样的内容在
+    # 不同平台构建出的zip字节不同，且Linux/macOS上部分unzip实现会在
+    # create_system=3但external_attr=0时把解出的文件权限设成000（不可读）。
+    # 显式固定成"Unix普通文件+0644权限"，让这两个字段不再依赖构建平台。
+    info.create_system = 3
+    info.external_attr = 0o644 << 16
+    zf.writestr(info, data)
+
+
+def _build_fixed_scope_zips(output_dir: Path, articles: list) -> None:
+    """生成三类"构建时范围已知"的下载产物到downloads/：
+    - blog-full.zip：原始文章(posts/<id>/*，相对路径图片)+首页，跟mirror
+      现有"打包下载全站"内容对等，区别只是这里是构建时预生成的静态文件。
+    - export-all.zip：全部文章的standalone(base64内联)版本打包。
+    - export-tag/<tag>.zip：按标签的standalone版本打包。标签之间允许重叠——
+      一篇文章同时属于多个标签时，会出现在每个对应标签的zip里，这是有意的：
+      用户按标签导出应该拿到该标签下的完整文章集合，不该因为文章也属于别的
+      标签就被排除。
+    """
+    downloads_dir = output_dir / "downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    posts_dir = output_dir / "posts"
+    standalone_dir = output_dir / "standalone"
+
+    with zipfile.ZipFile(downloads_dir / "blog-full.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+        for article in articles:
+            post_dir = posts_dir / article["id"]
+            if not post_dir.exists():
+                continue
+            for f in sorted(p for p in post_dir.rglob("*") if p.is_file()):
+                _zip_write_bytes(zf, f.read_bytes(), f"posts/{article['id']}/{f.relative_to(post_dir).as_posix()}")
+        index_file = output_dir / "index.html"
+        if index_file.exists():
+            _zip_write_bytes(zf, index_file.read_bytes(), "index.html")
+
+    def _write_standalone_zip(path: Path, selected_articles: list) -> None:
+        used_names = set()
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for article in selected_articles:
+                standalone_file = standalone_dir / f"{article['id']}.html"
+                if not standalone_file.exists():
+                    continue
+                name = _zip_arcname_for_article(article)
+                if name in used_names:
+                    name = f"{article['id']}.html"
+                used_names.add(name)
+                _zip_write_bytes(zf, standalone_file.read_bytes(), name)
+
+    _write_standalone_zip(downloads_dir / "export-all.zip", articles)
+
+    tag_export_dir = downloads_dir / "export-tag"
+    tag_export_dir.mkdir(parents=True, exist_ok=True)
+    articles_by_tag = {}
+    for article in articles:
+        for tag in article.get("tags") or []:
+            articles_by_tag.setdefault(tag, []).append(article)
+    for tag, tag_articles in articles_by_tag.items():
+        _write_standalone_zip(tag_export_dir / f"{_safe_tag_filename(tag)}.zip", tag_articles)
+
+
+def _build_search_index(output_dir: Path, standalone_urls: dict | None = None) -> list:
     """从已经复制进output_dir的 posts/<id>/index.html 里提取搜索索引，
     只在html/白名单内容都已经复制完之后调用——不查数据库、不读访问统计，
-    只包含公开文章搜索需要的字段(title/url/date/tags/text)。
+    只包含公开文章搜索/下载需要的字段。
+
+    standalone_urls为None时（_fix_article_hrefs()内部那次调用，只是为了
+    拿title->url做首页链接修正）新增的两个字段就是空值，不影响那次调用的
+    用途；真正写入search-index.json的那次调用会传入_build_standalone_
+    articles()的返回值。
     """
     articles = []
     posts_dir = output_dir / "posts"
     if not posts_dir.exists():
         return articles
+    standalone_urls = standalone_urls or {}
     for post_dir in sorted(posts_dir.iterdir()):
         index_file = post_dir / "index.html"
         if not index_file.exists():
@@ -373,6 +649,8 @@ def _build_search_index(output_dir: Path) -> list:
             "date": meta["date"],
             "tags": meta["tags"],
             "text": meta["text"],
+            "standalone_url": standalone_urls.get(post_id, ""),
+            "media_files": _media_files_for(output_dir, post_id),
         })
     articles.sort(key=lambda a: a["date"], reverse=True)
     return articles
@@ -403,6 +681,12 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
     # 会读取posts/<id>/index.html的内容，应该读到修正后的版本）执行。
     _fix_cross_post_content_links(output_dir)
 
+    # 离线standalone版本必须在交叉引用修正之后生成（同样的理由：让standalone
+    # 版本里的"本站另一篇文章"链接也是修正后的地址），必须在下面写入
+    # search-index.json之前完成（每条记录的standalone_url字段要用到这里
+    # 的返回值）。
+    standalone_urls = _build_standalone_articles(output_dir)
+
     # index.html的生成放在目录复制之后：_build_index_html()内部要修正
     # 排行榜/fallback-list里的文章链接，需要用output_dir/posts、
     # output_dir/YYYY这些已经复制好的真实文件去验证链接是否可达
@@ -430,12 +714,21 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
 
     if PAGES_JS_SOURCE.exists():
         shutil.copy2(PAGES_JS_SOURCE, output_dir / "pages-index.js")
+    if DOWNLOAD_JS_SOURCE.exists():
+        shutil.copy2(DOWNLOAD_JS_SOURCE, output_dir / "pages-download.js")
+    if JSZIP_VENDOR_SOURCE.exists():
+        shutil.copy2(JSZIP_VENDOR_SOURCE, output_dir / "jszip.min.js")
 
-    articles = _build_search_index(output_dir)
+    articles = _build_search_index(output_dir, standalone_urls)
     (output_dir / "search-index.json").write_text(
         json.dumps({"articles": articles}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+
+    # 固定范围（全站/全部/按标签）的下载产物：范围在这里已经完全确定
+    # （用的就是刚写进search-index.json的这份articles列表），构建时一次性
+    # 生成好，运行时只是普通静态文件下载，不需要任何JS参与。
+    _build_fixed_scope_zips(output_dir, articles)
 
     return output_dir
 
@@ -451,12 +744,32 @@ _DANGEROUS_SUFFIXES = (
 )
 _DANGEROUS_NAMES = {"id_rsa", "id_ed25519", "foxzen-download-admin.html"}
 _REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME",
-                    "search-index.json", "pages-index.js")
+                    "search-index.json", "pages-index.js",
+                    # 下载功能是本轮明确声明的正式功能，不是可选增强——
+                    # 这几个缺一个都必须让整个构建失败，而不是悄悄发布一个
+                    # 看起来正常、实际缺下载能力的Pages站点。
+                    "pages-download.js", "jszip.min.js",
+                    "downloads/blog-full.zip", "downloads/export-all.zip")
 
 # search-index.json里每条记录只允许出现这些字段——如果以后有人不小心往
 # _build_search_index()里加了别的字段（比如手滑传入了visitor_key），
 # 这里会直接拒绝通过，而不是靠人工审查发现。
-_ALLOWED_ARTICLE_FIELDS = {"id", "title", "url", "date", "tags", "text"}
+_ALLOWED_ARTICLE_FIELDS = {"id", "title", "url", "date", "tags", "text",
+                           "standalone_url", "media_files"}
+
+
+def _scan_zip_for_dangerous_entries(zip_path: Path, output_dir: Path) -> list:
+    """打开一个zip逐条目按文件名/后缀比对危险名单——跟output_dir里裸文件
+    用的是同一份_DANGEROUS_SUFFIXES/_DANGEROUS_NAMES标准，"包在zip里"
+    不能成为绕过这个标准的方式。"""
+    found = []
+    label = zip_path.relative_to(output_dir)
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            base = name.rsplit("/", 1)[-1]
+            if Path(base).suffix in _DANGEROUS_SUFFIXES or base in _DANGEROUS_NAMES:
+                found.append(f"{label}!{name}")
+    return found
 
 
 def verify_publish(output_dir: Path, host: str) -> None:
@@ -489,6 +802,25 @@ def verify_publish(output_dir: Path, host: str) -> None:
         if p.suffix in _DANGEROUS_SUFFIXES or p.name in _DANGEROUS_NAMES:
             errors.append(f"发现危险文件: {p.relative_to(output_dir)}")
 
+    # 下载功能完整性：每篇文章都必须有对应的离线standalone版本，固定范围的
+    # 两个zip（全站/全部）必须存在且内容干净——这几项已经在_REQUIRED_FILES/
+    # 下面的zip扫描里覆盖了"存在与否"，这里补上"每篇文章都有、不是碰巧有几篇"
+    # 这一层，同时确认没有可执行代码/密钥类文件混进任何一个zip。
+    posts_dir_for_standalone = output_dir / "posts"
+    if posts_dir_for_standalone.exists():
+        for post_dir in sorted(posts_dir_for_standalone.iterdir()):
+            if not (post_dir / "index.html").exists():
+                continue
+            standalone_file = output_dir / "standalone" / f"{post_dir.name}.html"
+            if not standalone_file.exists():
+                errors.append(f"缺少离线standalone版本: standalone/{post_dir.name}.html")
+
+    for fixed_zip_name in ("downloads/blog-full.zip", "downloads/export-all.zip"):
+        fixed_zip_path = output_dir / fixed_zip_name
+        if fixed_zip_path.exists():
+            errors.extend(f"zip内发现危险文件: {e}"
+                           for e in _scan_zip_for_dangerous_entries(fixed_zip_path, output_dir))
+
     for name in ("robots.txt", "sitemap.xml", "CNAME"):
         f = output_dir / name
         if not f.exists():
@@ -511,6 +843,7 @@ def verify_publish(output_dir: Path, host: str) -> None:
             if not isinstance(articles, list) or not articles:
                 errors.append("search-index.json 里没有任何文章记录")
             else:
+                all_tags = set()
                 for a in articles:
                     extra_fields = set(a.keys()) - _ALLOWED_ARTICLE_FIELDS
                     if extra_fields:
@@ -520,6 +853,30 @@ def verify_publish(output_dir: Path, host: str) -> None:
                             errors.append(f"search-index.json 记录缺少必需字段: {field} (id={a.get('id')})")
                     if MIRROR_ROOT_URL in str(a.get("url", "")):
                         errors.append(f"search-index.json 的url字段仍写死了mirror.foxzen.me (id={a.get('id')})")
+
+                    # standalone_url/media_files是下载功能依赖的字段，缺失或
+                    # 指向不存在的文件必须硬失败——这是"已经声明为正式功能"的
+                    # 核心产物，不接受"生成失败但静默发布"。
+                    standalone_url = a.get("standalone_url")
+                    if not standalone_url:
+                        errors.append(f"search-index.json 记录缺少standalone_url (id={a.get('id')})")
+                    elif not (output_dir / standalone_url.lstrip("/")).exists():
+                        errors.append(f"standalone_url指向的文件不存在: {standalone_url} (id={a.get('id')})")
+                    for media_name in a.get("media_files") or []:
+                        media_path = output_dir / "posts" / str(a.get("id", "")) / "media" / media_name
+                        if not media_path.exists():
+                            errors.append(f"media_files列出的文件不存在: {media_name} (id={a.get('id')})")
+
+                    all_tags.update(a.get("tags") or [])
+
+                for tag in sorted(all_tags):
+                    tag_zip = output_dir / "downloads" / "export-tag" / f"{_safe_tag_filename(tag)}.zip"
+                    if not tag_zip.exists():
+                        errors.append(f"缺少按标签的离线导出zip: downloads/export-tag/"
+                                      f"{_safe_tag_filename(tag)}.zip (tag={tag!r})")
+                    else:
+                        errors.extend(f"zip内发现危险文件: {e}"
+                                      for e in _scan_zip_for_dangerous_entries(tag_zip, output_dir))
 
     if errors:
         raise PublishVerificationError("；".join(errors))

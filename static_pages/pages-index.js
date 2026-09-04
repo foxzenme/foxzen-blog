@@ -99,7 +99,11 @@
     var ul = el("ul", { id: "post-list" });
     items.forEach(function (a) {
       var tagsText = (a.tags || []).map(function (t) { return "#" + t; }).join(" ");
+      // checkbox是pages-download.js"下载已勾选/导出离线版(已勾选)"读取
+      // 选中状态用的钩子，本文件不关心/不处理下载逻辑，两者职责分离。
+      var checkbox = el("input", { type: "checkbox", "data-role": "select-post", "data-post-id": a.id });
       var li = el("li", null, [
+        checkbox,
         el("a", { href: a.url, text: a.title, target: "_blank", rel: "noopener" }),
         el("span", { class: "date", text: " " + humanDate(a.date) + " " + tagsText }),
       ]);

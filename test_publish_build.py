@@ -680,8 +680,12 @@ def test_search_index_generated_with_expected_fields():
         check("date字段正确", a["date"] == "2026-07-15")
         check("tags字段正确", a["tags"] == ["Firefox", "隐私"])
         check("text字段包含正文内容", "真实文章正文" in a["text"])
-        check("记录里没有多余字段(比如visitor/page_hit)",
-              set(a.keys()) == {"id", "title", "url", "date", "tags", "text"})
+        # standalone_url/media_files是下载功能新增的字段，记录里应该正好
+        # 是这8个字段，不多不少——多了说明有人不小心加了不该出现的字段
+        # （比如visitor/page_hit），少了说明下载功能相关字段漏生成了。
+        check("记录字段正好是这8个(含下载功能新增的standalone_url/media_files)",
+              set(a.keys()) == {"id", "title", "url", "date", "tags", "text",
+                                 "standalone_url", "media_files"})
     with_fixture(_run)
 
 
@@ -951,6 +955,439 @@ def test_real_local_html_dir_builds_without_error():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# 首页品牌文案规范化（_normalize_brand_heading）：html/是从服务器下载下来的
+# 快照，可能停留在fetch_blog.py品牌文案修改之前的旧版本，这几个测试独立
+# 构造最小的index.html夹具，不复用_make_fixture_html_dir()，避免影响
+# 上面其他已经通过的测试。
+# ---------------------------------------------------------------------------
+
+_OLD_BRAND_HEADING = "统计学习小议 - 镜像站"
+
+
+def _make_brand_fixture_html_dir(tmp, title_and_h1_text):
+    html_dir = tmp / "html"
+    html_dir.mkdir()
+    (html_dir / "index.html").write_text(
+        "<!DOCTYPE html><html><head>"
+        f"<title>{title_and_h1_text}</title></head><body>"
+        f"<h1>{title_and_h1_text}</h1>"
+        '<div class="archive-note">测试正文里恰好也提到"'
+        f'{_OLD_BRAND_HEADING}"这几个字，不应该被品牌规范化逻辑误改。</div>'
+        '<div id="app"></div><script src="/static/index.js"></script>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    return html_dir
+
+
+def with_brand_fixture(title_and_h1_text, fn):
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_brand_test_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html = _make_brand_fixture_html_dir(tmp, title_and_h1_text)
+    publish_build.HTML_DIR = fixture_html
+    output_dir = tmp / "publish_out"
+    try:
+        fn(tmp, output_dir)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_stale_brand_heading_is_normalized_to_current_brand():
+    """html/index.html还停留在旧品牌"统计学习小议 - 镜像站"时，构建产物的
+    <title>/<h1>必须被规范化成当前品牌"狐斋志异 - 镜像站"。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("旧品牌<title>被规范化成当前品牌",
+              f"<title>{publish_build.BRAND_HEADING}</title>" in content)
+        check("旧品牌<h1>被规范化成当前品牌",
+              f"<h1>{publish_build.BRAND_HEADING}</h1>" in content)
+        check("正文里恰好出现的旧品牌字样原样保留，未被全局误改",
+              f'测试正文里恰好也提到"{_OLD_BRAND_HEADING}"' in content)
+    with_brand_fixture(_OLD_BRAND_HEADING, _run)
+
+
+def test_current_brand_heading_is_left_unchanged_idempotent():
+    """html/index.html已经是当前品牌时，构建产物必须保持不变——规范化
+    逻辑对"已经正确"的输入必须是幂等的，不产生重复标签或多余改动。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        check("已经是当前品牌的<title>保持不变",
+              f"<title>{publish_build.BRAND_HEADING}</title>" in content)
+        check("已经是当前品牌的<h1>保持不变",
+              f"<h1>{publish_build.BRAND_HEADING}</h1>" in content)
+        check("只有一个<title>标签（未被重复处理）", content.count("<title>") == 1)
+        check("只有一个<h1>标签（未被重复处理）", content.count("<h1>") == 1)
+    import publish_build
+    with_brand_fixture(publish_build.BRAND_HEADING, _run)
+
+
+def test_github_and_cf_builds_both_get_normalized_brand():
+    """github.foxzen.me和cf.foxzen.me两个host的构建产物在品牌文案上
+    必须一致，都是规范化之后的当前品牌。"""
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_brand_test2_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html = _make_brand_fixture_html_dir(tmp, _OLD_BRAND_HEADING)
+    publish_build.HTML_DIR = fixture_html
+    try:
+        out_gh, out_cf = tmp / "out_gh", tmp / "out_cf"
+        publish_build.build_publish("github.foxzen.me", out_gh)
+        publish_build.build_publish("cf.foxzen.me", out_cf)
+        for out in (out_gh, out_cf):
+            content = (out / "index.html").read_text(encoding="utf-8")
+            check(f"{out.name}: <title>是当前品牌",
+                  f"<title>{publish_build.BRAND_HEADING}</title>" in content)
+            check(f"{out.name}: <h1>是当前品牌",
+                  f"<h1>{publish_build.BRAND_HEADING}</h1>" in content)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 下载/离线导出功能（方案A）：standalone HTML生成 + 固定范围三类zip
+# （全站/全部/按标签）+ 浏览器端JSZip必需的本地vendor文件 + verify_publish()
+# 的硬失败检查。独立夹具，贴近真实POST_TEMPLATE的meta-precise/discuss-btn/
+# GA脚本块/完读特效块/图片引用这几个关键区块，不复用/不影响上面其他测试。
+# ---------------------------------------------------------------------------
+
+def _make_download_post_html(post_id, title, tags, own_permalink, cross_ref_permalink=None):
+    tags_html = "".join(f'<a href="/index.html?tag={t}">#{t}</a>' for t in tags)
+    cross_ref = (f'<p>参见<a href="{cross_ref_permalink}">另一篇</a>。</p>'
+                 if cross_ref_permalink else "")
+    return (
+        "<!DOCTYPE html><html><head>"
+        "<!-- GA_START --><script>ga_tracking_code</script><!-- GA_END -->\n"
+        f"<title>{title}</title></head><body>"
+        f"<h1>{title}</h1>"
+        '<div class="meta">发布于 2026-08-01</div>'
+        '<div class="meta-precise">最初发布：2026-08-01 00:00:00 (UTC) · '
+        '最后修改：2026-08-02 03:04:05 (UTC) · 全文100字 · 预计阅读1分钟</div>'
+        f'<div class="tags">{tags_html}</div>'
+        f'<div class="content"><p>正文。<img src="/posts/{post_id}/media/pic.png"></p>{cross_ref}</div>'
+        '<div class="discuss-cta">'
+        f'<a class="discuss-btn" href="{own_permalink}" target="_blank" rel="noopener">💬 到主站参与讨论</a>'
+        "</div>"
+        '<a class="back" href="/" onclick="if (history.length > 1) '
+        '{ history.back(); return false; }">&larr; 返回目录</a>'
+        "<!-- FINISH_READ_START --><div>finish celebration</div><!-- FINISH_READ_END -->"
+        "</body></html>"
+    )
+
+
+def _make_download_fixture_html_dir(tmp):
+    html_dir = tmp / "html"
+    html_dir.mkdir()
+    (html_dir / "index.html").write_text(
+        '<html><body><div id="app"></div>'
+        '<script src="/static/index.js"></script>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (html_dir / "robots.txt").write_text(
+        "User-agent: *\nAllow: /\nSitemap: https://mirror.foxzen.me/sitemap.xml\n", encoding="utf-8")
+    (html_dir / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<url><loc>https://mirror.foxzen.me/</loc></url>\n</urlset>\n',
+        encoding="utf-8",
+    )
+    (html_dir / "404").mkdir()
+    (html_dir / "404" / "index.html").write_text("<html>404</html>", encoding="utf-8")
+
+    post_a_html = _make_download_post_html(
+        "post-a", "文章A", ["Firefox", "理念，备份"],
+        "https://digatlas.blogspot.com/2026/08/article-a.html",
+        cross_ref_permalink="https://digatlas.blogspot.com/2026/08/article-b.html")
+    post_b_html = _make_download_post_html(
+        "post-b", "文章B", ["Firefox"],
+        "https://digatlas.blogspot.com/2026/08/article-b.html")
+
+    for post_id, post_html in (("post-a", post_a_html), ("post-b", post_b_html)):
+        post_dir = html_dir / "posts" / post_id
+        post_dir.mkdir(parents=True)
+        (post_dir / "index.html").write_text(post_html, encoding="utf-8")
+        media_dir = post_dir / "media"
+        media_dir.mkdir()
+        (media_dir / "pic.png").write_bytes(b"\x89PNG-fake-bytes-for-test")
+
+    return html_dir
+
+
+def with_download_fixture(fn):
+    import publish_build
+    tmp = Path(tempfile.mkdtemp(prefix="publish_build_download_test_"))
+    orig_html_dir = publish_build.HTML_DIR
+    fixture_html = _make_download_fixture_html_dir(tmp)
+    publish_build.HTML_DIR = fixture_html
+    output_dir = tmp / "publish_out"
+    try:
+        fn(tmp, output_dir)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_standalone_html_generated_for_every_article():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        for post_id in ("post-a", "post-b"):
+            check(f"standalone/{post_id}.html存在", (out / "standalone" / f"{post_id}.html").exists())
+    with_download_fixture(_run)
+
+
+def test_standalone_html_inlines_images_strips_scripts_and_back_link():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "standalone" / "post-a.html").read_text(encoding="utf-8")
+        check("图片已base64内联", "data:image/png;base64," in content)
+        check("不再有media/相对路径的img src", "media/pic.png" not in content)
+        check("GA脚本块已剥离", "GA_START" not in content and "ga_tracking_code" not in content)
+        check("完读特效脚本块已剥离", "FINISH_READ_START" not in content and "finish celebration" not in content)
+        check("返回目录链接已移除", "返回目录" not in content)
+        check("来源信息条包含本文自己的Blogger permalink",
+              "https://digatlas.blogspot.com/2026/08/article-a.html" in content)
+        check("来源信息条包含精确的最后修改时间", "最后修改时间：2026-08-02 03:04:05 (UTC)" in content)
+        check("交叉引用另一篇文章的Blogger permalink已修正为相对地址",
+              "https://digatlas.blogspot.com/2026/08/article-b.html" not in content)
+        check("交叉引用指向post-b的真实相对地址", 'href="/posts/post-b/"' in content)
+    with_download_fixture(_run)
+
+
+def test_search_index_has_standalone_and_media_fields():
+    def _run(tmp, out):
+        import publish_build, json
+        publish_build.build_publish("github.foxzen.me", out)
+        data = json.loads((out / "search-index.json").read_text(encoding="utf-8"))
+        by_id = {a["id"]: a for a in data["articles"]}
+        check("post-a的standalone_url正确", by_id["post-a"]["standalone_url"] == "/standalone/post-a.html")
+        check("post-a的media_files包含pic.png", "pic.png" in by_id["post-a"]["media_files"])
+        check("standalone_url指向真实存在的文件",
+              (out / by_id["post-a"]["standalone_url"].lstrip("/")).exists())
+    with_download_fixture(_run)
+
+
+def test_blog_full_zip_contains_original_articles_and_index():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "blog-full.zip") as zf:
+            names = zf.namelist()
+            check("包含post-a原始文章", "posts/post-a/index.html" in names)
+            check("包含post-a的媒体文件", "posts/post-a/media/pic.png" in names)
+            check("包含首页index.html", "index.html" in names)
+            dangerous = [n for n in names if n.endswith((".db", ".py", ".env", ".pem", ".key", ".secret", ".token"))]
+            check("不包含危险后缀文件", dangerous == [], f"found {dangerous}")
+    with_download_fixture(_run)
+
+
+def test_export_all_zip_contains_standalone_versions_not_raw():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        with zipfile.ZipFile(out / "downloads" / "export-all.zip") as zf:
+            names = zf.namelist()
+            check("export-all.zip不是posts/目录结构（用的是standalone扁平文件）",
+                  not any(n.startswith("posts/") for n in names))
+            check("export-all.zip里的文件数等于文章数", len(names) == 2, f"got {names}")
+            sample = zf.read(names[0]).decode("utf-8")
+            check("zip内是已经base64内联的standalone版本", "data:image/png;base64," in sample)
+    with_download_fixture(_run)
+
+
+def test_export_tag_zip_only_contains_matching_tag_articles():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        unique_tag_zip = out / "downloads" / "export-tag" / "理念，备份.zip"
+        check("只有post-a有的标签，对应zip存在", unique_tag_zip.exists())
+        with zipfile.ZipFile(unique_tag_zip) as zf:
+            check("只包含1篇文章", len(zf.namelist()) == 1, f"got {zf.namelist()}")
+        shared_tag_zip = out / "downloads" / "export-tag" / "Firefox.zip"
+        check("两篇文章共有的标签，对应zip存在", shared_tag_zip.exists())
+        with zipfile.ZipFile(shared_tag_zip) as zf:
+            check("两篇文章都属于Firefox标签时zip包含2篇（有意的重叠，不去重）",
+                  len(zf.namelist()) == 2, f"got {zf.namelist()}")
+    with_download_fixture(_run)
+
+
+def test_verify_publish_hard_fails_when_standalone_missing():
+    """核心下载产物生成失败必须让整个构建失败，不能静默发布一个缺下载
+    功能的Pages——这是本轮明确要求的hard fail，不是warning。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        (out / "standalone" / "post-a.html").unlink()
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+            check("standalone文件缺失时verify_publish应该抛异常", False, "但没有抛出")
+        except publish_build.PublishVerificationError as e:
+            check("standalone缺失被判定为硬失败", "post-a.html" in str(e))
+    with_download_fixture(_run)
+
+
+def test_verify_publish_hard_fails_when_fixed_zip_missing():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        (out / "downloads" / "blog-full.zip").unlink()
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+            check("blog-full.zip缺失时verify_publish应该抛异常", False, "但没有抛出")
+        except publish_build.PublishVerificationError as e:
+            check("blog-full.zip缺失被判定为硬失败（_REQUIRED_FILES）", "blog-full.zip" in str(e))
+    with_download_fixture(_run)
+
+
+def test_verify_publish_hard_fails_when_tag_zip_missing():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        (out / "downloads" / "export-tag" / "Firefox.zip").unlink()
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+            check("标签zip缺失时verify_publish应该抛异常", False, "但没有抛出")
+        except publish_build.PublishVerificationError as e:
+            check("标签zip缺失被判定为硬失败", "Firefox" in str(e))
+    with_download_fixture(_run)
+
+
+def test_verify_publish_hard_fails_on_dangerous_file_inside_zip():
+    def _run(tmp, out):
+        import publish_build, zipfile
+        publish_build.build_publish("github.foxzen.me", out)
+        zip_path = out / "downloads" / "export-all.zip"
+        with zipfile.ZipFile(zip_path, "a") as zf:
+            zf.writestr("leaked_secret.env", "SECRET=1")
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+            check("zip内混入.env文件时verify_publish应该抛异常", False, "但没有抛出")
+        except publish_build.PublishVerificationError as e:
+            check("zip内的危险文件被检测出来", "leaked_secret.env" in str(e))
+    with_download_fixture(_run)
+
+
+def test_jszip_vendored_locally_not_via_cdn():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        jszip_file = out / "jszip.min.js"
+        check("jszip.min.js已作为本地静态文件发布", jszip_file.exists())
+        content = jszip_file.read_text(encoding="utf-8", errors="ignore")
+        check("确实是JSZip库本身而不是空文件/占位符", "JSZip" in content and len(content) > 10000)
+        index_content = (out / "index.html").read_text(encoding="utf-8")
+        check('index.html引用的是本地"/jszip.min.js"',
+              '<script src="/jszip.min.js"></script>' in index_content)
+        for banned in ("cdnjs.cloudflare.com", "unpkg.com", "jsdelivr.net"):
+            check(f"index.html不引用外部CDN: {banned}", banned not in index_content)
+    with_fixture(_run)
+
+
+def test_index_html_has_all_five_download_buttons():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        content = (out / "index.html").read_text(encoding="utf-8")
+        for role in ("download-all-btn", "download-selected-btn", "export-selected-btn",
+                     "export-tag-btn", "export-all-btn"):
+            check(f"首页包含下载按钮: {role}", f'data-role="{role}"' in content)
+        check("首页引用pages-download.js", '<script src="/pages-download.js"></script>' in content)
+    with_fixture(_run)
+
+
+def test_pages_download_js_no_absolute_domains_or_cdn():
+    src = (Path(__file__).parent / "static_pages" / "pages-download.js").read_text(encoding="utf-8")
+    for domain in ("github.foxzen.me", "cf.foxzen.me", "backup.foxzen.me", "mirror.foxzen.me"):
+        check(f"pages-download.js不写死域名: {domain}", domain not in src)
+    for cdn in ("cdnjs.cloudflare.com", "unpkg.com", "jsdelivr.net"):
+        check(f"pages-download.js不引用外部CDN: {cdn}", cdn not in src)
+
+
+def test_python_and_js_tag_filename_sanitization_agree_on_python_side():
+    """publish_build.py::_safe_tag_filename()和pages-download.js里
+    safeTagFilename()的清洗规则必须完全一致，否则浏览器现场拼的下载URL
+    会跟构建时生成的zip文件名对不上。两边各自独立实现（不共享代码），
+    一致性靠这里和test_pages_download_js_pure_functions_via_node()
+    用同一批输入分别断言同一个期望值来间接印证。"""
+    import publish_build
+    check("Python: 特殊字符清洗", publish_build._safe_tag_filename('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j")
+    check("Python: 逗号中文标签原样保留",
+          publish_build._safe_tag_filename("理念，备份方式，计算机知识") == "理念，备份方式，计算机知识")
+    check("Python: zip条目名(canonical地址)",
+          publish_build._zip_arcname_for_article({"id": "x", "url": "/2026/08/slug.html"}) == "2026-08-slug.html")
+    check("Python: zip条目名(fallback地址)",
+          publish_build._zip_arcname_for_article({"id": "post-x", "url": "/posts/post-x/"}) == "post-x.html")
+
+
+def test_pages_download_js_pure_functions_via_node():
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过pages-download.js的真实JS行为验证")
+        return
+
+    js_path = (Path(__file__).parent / "static_pages" / "pages-download.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+    snippet = f"""
+    const P = require("{js_path_js}");
+    console.log("safe_tag_basic", P.safeTagFilename("Firefox") === "Firefox");
+    console.log("safe_tag_special_chars", P.safeTagFilename('a/b\\\\c:d*e?f"g<h>i|j') === "a_b_c_d_e_f_g_h_i_j");
+    console.log("safe_tag_comma_chinese", P.safeTagFilename("理念，备份方式，计算机知识") === "理念，备份方式，计算机知识");
+    console.log("arcname_canonical", P.zipArcnameForArticle({{id:"x", url:"/2026/08/slug.html"}}) === "2026-08-slug.html");
+    console.log("arcname_fallback", P.zipArcnameForArticle({{id:"post-x", url:"/posts/post-x/"}}) === "post-x.html");
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    for name in ("safe_tag_basic", "safe_tag_special_chars", "safe_tag_comma_chinese",
+                 "arcname_canonical", "arcname_fallback"):
+        check(f"pages-download.js真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+
+def test_download_artifacts_identical_across_hosts():
+    """下载产物本身不含任何host相关信息(跟mirror.foxzen.me/host参数无关)，
+    github和cf两个构建的standalone/downloads内容应该完全一致。"""
+    def _run(tmp, out):
+        import publish_build
+        out_gh, out_cf = tmp / "out_gh", tmp / "out_cf"
+        publish_build.build_publish("github.foxzen.me", out_gh)
+        publish_build.build_publish("cf.foxzen.me", out_cf)
+        check("blog-full.zip两个host字节完全一致",
+              (out_gh / "downloads" / "blog-full.zip").read_bytes()
+              == (out_cf / "downloads" / "blog-full.zip").read_bytes())
+        check("export-all.zip两个host字节完全一致",
+              (out_gh / "downloads" / "export-all.zip").read_bytes()
+              == (out_cf / "downloads" / "export-all.zip").read_bytes())
+        check("standalone/post-a.html两个host字节完全一致",
+              (out_gh / "standalone" / "post-a.html").read_bytes()
+              == (out_cf / "standalone" / "post-a.html").read_bytes())
+    with_download_fixture(_run)
+
+
+def test_html_source_files_untouched_by_download_build():
+    """构建下载产物的过程只应该在output_dir里读写，绝不修改html/源目录
+    本身——跟_fix_cross_post_content_links()对posts/<id>/index.html的
+    "只改output_dir的拷贝"这条既有约定完全一致。"""
+    def _run(tmp, out):
+        import publish_build
+        source_files = {
+            p: p.read_bytes()
+            for p in publish_build.HTML_DIR.rglob("*") if p.is_file()
+        }
+        publish_build.build_publish("github.foxzen.me", out)
+        for p, original_bytes in source_files.items():
+            check(f"html/源文件未被修改: {p.relative_to(publish_build.HTML_DIR)}",
+                  p.read_bytes() == original_bytes)
+    with_download_fixture(_run)
+
+
 def main():
     tests = [
         test_data_and_db_excluded,
@@ -990,6 +1427,26 @@ def main():
         test_canonical_and_posts_copy_stay_identical_after_content_link_fix,
         test_github_and_cloudflare_builds_get_same_root_relative_link,
         test_source_html_posts_untouched_by_content_link_fix,
+        test_stale_brand_heading_is_normalized_to_current_brand,
+        test_current_brand_heading_is_left_unchanged_idempotent,
+        test_github_and_cf_builds_both_get_normalized_brand,
+        test_standalone_html_generated_for_every_article,
+        test_standalone_html_inlines_images_strips_scripts_and_back_link,
+        test_search_index_has_standalone_and_media_fields,
+        test_blog_full_zip_contains_original_articles_and_index,
+        test_export_all_zip_contains_standalone_versions_not_raw,
+        test_export_tag_zip_only_contains_matching_tag_articles,
+        test_verify_publish_hard_fails_when_standalone_missing,
+        test_verify_publish_hard_fails_when_fixed_zip_missing,
+        test_verify_publish_hard_fails_when_tag_zip_missing,
+        test_verify_publish_hard_fails_on_dangerous_file_inside_zip,
+        test_jszip_vendored_locally_not_via_cdn,
+        test_index_html_has_all_five_download_buttons,
+        test_pages_download_js_no_absolute_domains_or_cdn,
+        test_python_and_js_tag_filename_sanitization_agree_on_python_side,
+        test_pages_download_js_pure_functions_via_node,
+        test_download_artifacts_identical_across_hosts,
+        test_html_source_files_untouched_by_download_build,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

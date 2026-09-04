@@ -10,7 +10,8 @@ Flask后端。本版起，nginx不再直接serve文章页/首页/短号——这
                                        （计数在跳转后的落地页发生，避免重复计数）
 - GET  /posts/<post_id>/              旧版直链，301跳转到canonical路径（保持旧链接不失效）
 - GET  /<year>/<month>/<slug>.html    文章页（canonical路径），计数并返回内容
-- POST /api/refresh                   手动刷新，限流
+- POST /api/refresh/<target>          公开匿名刷新（target: mirror/backup/github/cf），限流
+- GET  /api/refresh/<target>/status   查询某个target的当前状态/上次结果
 - GET  /api/search                    全文搜索
 - GET  /api/download/all              打包全站zip，计数(scope=site)
 - POST /api/download/selected         打包勾选文章zip，逐篇计数(scope=article)
@@ -24,25 +25,37 @@ import html as html_lib
 import io
 import json
 import mimetypes
+import os
 import random
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
-from threading import Lock
 
 from flask import Flask, request, jsonify, send_file, Response, abort, redirect
 
 import db
+import git_publish
+import github_actions
 import zip_cache
 from internal_links import rewrite_internal_links
 from telegram_notify import notify
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 zip_cache.start_cleanup_thread()
+# 数据库schema的建立/迁移不在这里做（不再有模块顶层的db.init_db()调用）。
+# 之前这里无条件跑db.init_db()是为了让gunicorn直接import这个模块时（不会
+# 走文件末尾"if __name__=='__main__'"）也能保证refresh_locks/refresh_targets
+# 这两张表就绪——但代价是任何`import app`（包括测试、包括临时排查用的
+# `python -c "import app"`）都会立刻对当时db.DB_PATH指向的文件生效，这正是
+# 真实data/blog.db被测试意外污染出两张空表的根因。现在改成db.py内部的懒
+# 初始化（见db._ensure_schema()）：首次真正访问数据库时才建表，无论是生产
+# 环境的gunicorn worker收到第一个真实请求，还是测试先把db.DB_PATH指向
+# 临时文件——import这个模块本身不再触发任何数据库I/O。
 
 BASE_DIR = Path(__file__).parent
 HTML_DIR = BASE_DIR / "html"
@@ -52,20 +65,38 @@ FETCH_SCRIPT = BASE_DIR / "fetch_blog.py"
 REFRESH_COOLDOWN_SECONDS = 5 * 60
 DISK_ALERT_THRESHOLD = 0.80
 
-REFRESH_STATE_FILE = BASE_DIR / "data" / "last_refresh.json"
-_refresh_lock = Lock()
+# 公开匿名刷新系统：mirror/backup/github/cf四个target共用的常量。
+# data/last_refresh.json不再被读写——冷却计时基准和锁状态全部落在SQLite
+# （db.py的refresh_locks/refresh_targets表），不保留旧文件的兼容读取：
+# 旧文件里最坏情况下残留的冷却时间戳窗口只有5分钟，忽略它不会造成安全
+# 问题，继续读它反而会形成"SQLite一份、JSON一份"两个可能不一致的状态
+# 来源。旧文件本身不会被这里的代码删除。
+CONTENT_FETCH_LOCK = "content_fetch"          # 4个target都要先跑一次fetch_blog.py，共享这把锁
+GIT_PUBLISH_LOCK = "git_publish"              # github/cf共享："把html/变化commit+push"这把锁
+FETCH_SUBPROCESS_TIMEOUT_SECONDS = 300         # 与下面subprocess.run(fetch_blog.py)的timeout保持一致
+CONTENT_FETCH_STALE_SECONDS = FETCH_SUBPROCESS_TIMEOUT_SECONDS + 120   # 420，判定死锁年龄阈值，留2分钟余量
+GIT_PUSH_TIMEOUT_SECONDS = 60                  # git push本身的subprocess超时
+GIT_PUBLISH_STALE_SECONDS = GIT_PUSH_TIMEOUT_SECONDS + 60              # 120，留1分钟余量
+GITHUB_ACTIONS_WAIT_SECONDS = 90               # 同步HTTP请求里有界轮询Actions conclusion的上限，超过就返回202/running
+# 90秒有界等待到期只是这次HTTP请求不再继续占用gunicorn worker等下去，不代表
+# 没人关心结果——超时后会启动一个后台daemon线程继续跟踪，这是它的独立、
+# 更长的上限（不占用HTTP worker，只占用一个后台线程，可以给得比前台等待
+# 宽松很多）。这台VPS上pages.yml工作流只是"跑几个纯Python测试脚本+
+# 生成静态文件+上传"，正常预期在几分钟内结束，20分钟是留了充分余量的
+# "确实异常了就别再等"上限，不是精确计算出来的值，如果之后发现工作流
+# 经常需要更久，直接调这一个数字即可。
+GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS = 1200
 
+GITHUB_REPO = "foxzenme/foxzen-blog"
+GITHUB_PAGES_WORKFLOW_FILE = "pages.yml"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")   # 由VPS systemd Environment=注入，见systemd/blog-mirror-api.service
+GIT_BOT_NAME = "Foxzen Refresh Bot"
+GIT_BOT_EMAIL = "foxzen-refresh-bot@users.noreply.github.com"
 
-def _read_refresh_state():
-    try:
-        return json.loads(REFRESH_STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {"last_refresh_ts": 0.0, "last_result": {"status": "unknown", "detail": "尚未执行过刷新"}}
-
-
-def _write_refresh_state(state):
-    REFRESH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REFRESH_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+REFRESH_CORS_ALLOWED_ORIGINS = {
+    "https://mirror.foxzen.me", "https://backup.foxzen.me",
+    "https://github.foxzen.me", "https://cf.foxzen.me",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -184,37 +215,327 @@ def canonical_post_page(year, month, slug):
 # API
 # ---------------------------------------------------------------------------
 
-@app.route("/api/refresh", methods=["POST"])
-def refresh():
-    with _refresh_lock:
-        state = _read_refresh_state()
-        now = time.time()
-        elapsed = now - state.get("last_refresh_ts", 0.0)
-        if elapsed < REFRESH_COOLDOWN_SECONDS:
-            remaining = int(REFRESH_COOLDOWN_SECONDS - elapsed)
-            return jsonify({
-                "executed": False,
-                "reason": f"距离上次刷新不足{REFRESH_COOLDOWN_SECONDS//60}分钟，请{remaining}秒后再试",
-                "last_result": state.get("last_result"),
-            }), 429
+REFRESH_TARGET_CONVERTER = "mirror,backup,github,cf"
 
+
+def _run_content_fetch(target_key: str) -> dict:
+    """4个target共用的第一阶段：原子检查target_key自己的冷却 + content_fetch/
+    git_publish双向互斥 + 跑一次fetch_blog.py。
+
+    双向互斥用cross_check_idle实现：content_fetch的获取会检查git_publish
+    是否idle（防止content_fetch正在改写html/的同时git_publish在git add，
+    产生撕裂读）；反过来_run_git_publish()获取git_publish时也会检查
+    content_fetch是否idle——两边都不为了"少一点409"而破坏这个互斥，这是
+    你明确要求的取舍。
+
+    返回：
+      {"acquired": False, "reason": "cooldown", "cooldown_remaining_seconds": int}
+      {"acquired": False, "reason": "busy_content_fetch" | "busy_git_publish"}
+      {"acquired": True, "status": "ok" | "error", "detail": str, "post_count": None, "target_generation": int}
+    """
+    acquire = db.try_acquire_lock(
+        CONTENT_FETCH_LOCK, CONTENT_FETCH_STALE_SECONDS,
+        target_key=target_key, cooldown_seconds=REFRESH_COOLDOWN_SECONDS,
+        cross_check_idle=((GIT_PUBLISH_LOCK, GIT_PUBLISH_STALE_SECONDS),),
+        triggered_by=target_key,
+    )
+    if not acquire["acquired"]:
+        return acquire
+
+    status, detail, post_count = "error", "未知错误", None
+    try:
+        result = subprocess.run(
+            [sys.executable, str(FETCH_SCRIPT)],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=FETCH_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        ok = result.returncode == 0
+        status = "ok" if ok else "error"
+        detail = result.stdout[-500:] if ok else result.stderr[-500:]
+    except subprocess.TimeoutExpired:
+        status, detail = "error", f"抓取超时(>{FETCH_SUBPROCESS_TIMEOUT_SECONDS}s)"
+    except Exception as e:
+        status, detail = "error", str(e)
+    finally:
+        # 无论成功/失败/超时/未预期异常，都必须释放锁，否则content_fetch
+        # 会永久停在running，后续所有刷新请求都会被误判为运行中拒绝掉。
+        db.release_lock(CONTENT_FETCH_LOCK, acquire["generation"], status, detail, post_count=post_count)
+
+    return {"acquired": True, "status": status, "detail": detail, "post_count": post_count,
+            "target_generation": acquire["target_generation"]}
+
+
+def _run_git_publish(target_key: str) -> dict:
+    """github/cf共用的第二阶段：原子获取git_publish锁（同样检查content_fetch
+    是否idle）-> 检测html/实际变化 -> 只有真的有变化才commit+push（O-2：
+    没有变化绝不产生空commit，也不push）。
+
+    返回：
+      {"acquired": False, "reason": "busy_content_fetch" | "busy_git_publish"}
+      {"acquired": True, "pushed": True, "commit_sha": str | None, "changed_file_count": int}
+      {"acquired": True, "pushed": False, "error_category": str, "detail": str}
+    """
+    if not GITHUB_TOKEN:
+        return {"acquired": True, "pushed": False, "error_category": "credentials_missing",
+                "detail": "服务器未配置GITHUB_TOKEN，无法推送"}
+
+    acquire = db.try_acquire_lock(
+        GIT_PUBLISH_LOCK, GIT_PUBLISH_STALE_SECONDS,
+        cross_check_idle=((CONTENT_FETCH_LOCK, CONTENT_FETCH_STALE_SECONDS),),
+        triggered_by=target_key,
+    )
+    if not acquire["acquired"]:
+        return acquire
+
+    commit_message = f"content sync via {target_key} refresh"
+    status, detail = "error", "未知错误"
+    push_result = {"pushed": False, "error_category": "git_commit_error", "detail": detail}
+    try:
+        push_result = git_publish.commit_and_push(
+            BASE_DIR, "html", GIT_BOT_NAME, GIT_BOT_EMAIL, commit_message,
+            GITHUB_TOKEN, GIT_PUSH_TIMEOUT_SECONDS,
+        )
+        status = "ok" if push_result["pushed"] else "error"
+        detail = "" if push_result["pushed"] else push_result["detail"]
+    except Exception as e:
+        push_result = {"pushed": False, "error_category": "git_commit_error", "detail": str(e)}
+        status, detail = "error", str(e)
+    finally:
+        db.release_lock(
+            GIT_PUBLISH_LOCK, acquire["generation"], status, detail,
+            commit_sha=(push_result.get("commit_sha") if push_result.get("pushed") else None),
+        )
+
+    return {"acquired": True, **push_result}
+
+
+def _rejection_response(target: str, outcome: dict):
+    reason = outcome["reason"]
+    if reason == "cooldown":
+        return jsonify({
+            "target": target, "status": "cooldown",
+            "cooldown_remaining_seconds": outcome["cooldown_remaining_seconds"],
+        }), 429
+    # busy_content_fetch / busy_git_publish：明确告诉调用方是哪一个内部
+    # 资源正忙，而不是笼统的"running"——避免用户以为是自己这个target卡住了。
+    busy_label = "内容抓取（content_fetch）" if reason == "busy_content_fetch" else "Git 发布（git_publish）"
+    return jsonify({
+        "target": target, "status": "busy", "reason": reason,
+        "detail": f"{busy_label} 正在被另一个刷新任务占用，请稍后重试",
+    }), 409
+
+
+def _watch_github_run_in_background(target_key, run_id, run_html_url, commit_sha, expected_generation):
+    """90秒有界等待到期、已经给客户端返回202之后，用一个独立的后台daemon
+    线程继续跟踪这个run真正的conclusion——git_publish锁在这之前已经正常
+    释放（它的职责到"push完成"为止，不延伸到"等Actions跑完"），这个线程
+    不持有、也不需要持有任何锁，只是单纯地继续问GitHub"这个run跑完了没"，
+    跑完之后把真实结果写回refresh_targets，让GET /api/refresh/github/status
+    最终能看到真实的success/failure，而不是永远停留在"上一次更早的结果"。
+
+    expected_generation：派发这次github刷新时refresh_targets.generation
+    的值。写回结果前，record_target_result()会重新核对这一行是否还是这个
+    值——如果在等待期间同一个target又发起了新一轮刷新（cooldown过期后
+    被再次点击，generation已经前进），说明这个后台线程跟踪的已经是过时
+    的一轮，写入会被静默拒绝，不会用旧run的迟到结果覆盖新一轮的状态
+    （跟release_lock()的generation fencing是同一个思路，这里保护的是
+    refresh_targets这一行）。
+
+    已知的、如实披露的局限：这是进程内的daemon线程，不是能扛住进程重启
+    的持久化任务队列。如果gunicorn worker在这个线程跑完之前被回收/重启，
+    这次跟踪会跟着丢失（refresh_targets就停留在没有最终结论的状态，用户
+    需要自己去GitHub Actions页面确认，或者等5分钟冷却过后重新点一次）。
+    这是"不引入Redis/Celery，只用项目里已有的线程机制（同zip_cache.py的
+    start_cleanup_thread()）"这个明确取舍下的已知代价，不是被忽略的问题。
+    """
+    def _watch():
         try:
-            result = subprocess.run(
-                [sys.executable, str(FETCH_SCRIPT)],
-                cwd=str(BASE_DIR), capture_output=True, text=True, timeout=300,
+            result = github_actions.poll_until_conclusion(
+                GITHUB_REPO, run_id, run_html_url, GITHUB_TOKEN,
+                max_wait_seconds=GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS,
             )
-            ok = result.returncode == 0
-            last_result = {
-                "status": "ok" if ok else "error",
-                "detail": (result.stdout[-500:] if ok else result.stderr[-500:]),
-            }
-        except subprocess.TimeoutExpired:
-            last_result = {"status": "error", "detail": "抓取超时(>300s)"}
         except Exception as e:
-            last_result = {"status": "error", "detail": str(e)}
+            db.record_target_result(target_key, "failure", f"后台跟踪Actions结论时异常: {e}",
+                                     error_category="actions_run_failed", retry_recommended=True,
+                                     commit_sha=commit_sha, expected_generation=expected_generation)
+            return
 
-        _write_refresh_state({"last_refresh_ts": now, "last_result": last_result})
-        return jsonify({"executed": True, "result": last_result})
+        if result["outcome"] == "success":
+            db.record_target_result(target_key, "success", "", commit_sha=commit_sha,
+                                     expected_generation=expected_generation)
+        elif result["outcome"] == "failure":
+            db.record_target_result(
+                target_key, "failure", f"GitHub Actions run 结论为 {result.get('conclusion')}",
+                error_category="actions_run_failed", retry_recommended=True,
+                commit_sha=commit_sha, expected_generation=expected_generation,
+            )
+        else:  # outcome == "timeout"：连后台这次更长的等待也放弃了
+            db.record_target_result(
+                target_key, "failure",
+                f"GitHub Actions run 长时间（>{GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS}s）未产出结论，"
+                f"已放弃跟踪，请手动查看Actions页面确认",
+                error_category="actions_run_unresolved", retry_recommended=True,
+                commit_sha=commit_sha, expected_generation=expected_generation,
+            )
+
+    threading.Thread(target=_watch, daemon=True, name=f"github-actions-watch-{run_id}").start()
+
+
+@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>", methods=["POST"])
+def refresh_target(target):
+    fetch_outcome = _run_content_fetch(target)
+    if not fetch_outcome["acquired"]:
+        return _rejection_response(target, fetch_outcome)
+
+    # 派发这一轮刷新时target自己的fencing token，后续所有record_target_result()
+    # 调用都带上它，作为"这次写入是否仍对应当前这一轮"的依据（见
+    # db.record_target_result()的expected_generation参数说明——用严格
+    # 递增的整数而不是时间戳，因为秒级精度的时间戳在cooldown_seconds=0
+    # 等场景下可能同一秒内重复，不能可靠地分辨"是不是同一轮"）。
+    expected_generation = fetch_outcome["target_generation"]
+
+    if target in ("mirror", "backup"):
+        status = "success" if fetch_outcome["status"] == "ok" else "failure"
+        error_category = None if status == "success" else "content_fetch_error"
+        db.record_target_result(target, status, fetch_outcome["detail"], error_category=error_category,
+                                 retry_recommended=(True if status == "failure" else None),
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": status, "detail": fetch_outcome["detail"],
+            "post_count": fetch_outcome["post_count"], "commit": None,
+        }), 200
+
+    # target in ("github", "cf")：两阶段。content_fetch失败/超时直接结束，
+    # 不进入git_publish阶段——没有新内容，不应该去发布。
+    if fetch_outcome["status"] != "ok":
+        db.record_target_result(target, "failure", fetch_outcome["detail"],
+                                 error_category="content_fetch_error", retry_recommended=True,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "failure", "error_category": "content_fetch_error",
+            "detail": fetch_outcome["detail"], "retry_recommended": True, "cooldown_applied": True,
+        }), 200
+
+    publish_outcome = _run_git_publish(target)
+    if not publish_outcome["acquired"]:
+        return _rejection_response(target, publish_outcome)
+    if not publish_outcome["pushed"]:
+        retry = publish_outcome["error_category"] != "credentials_missing"
+        db.record_target_result(target, "failure", publish_outcome["detail"],
+                                 error_category=publish_outcome["error_category"], retry_recommended=retry,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "failure", "error_category": publish_outcome["error_category"],
+            "detail": publish_outcome["detail"], "retry_recommended": retry, "cooldown_applied": True,
+        }), 200
+
+    commit_sha = publish_outcome["commit_sha"]
+    changed = publish_outcome["changed_file_count"]
+
+    if changed == 0:
+        detail = "内容无变化，未产生新提交，未触发重新部署"
+        db.record_target_result(target, "success", detail, commit_sha=commit_sha,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "success", "commit": commit_sha,
+            "changed_file_count": 0, "detail": detail,
+        }), 200
+
+    if target == "cf":
+        # 没有真正查询Cloudflare部署状态，success只能代表push成功、已经
+        # 移交给Cloudflare Pages的Git Integration，不能声称部署已完成。
+        detail = "git push successful; handed off to Cloudflare Pages（未查询实际部署状态）"
+        db.record_target_result(target, "success", detail, commit_sha=commit_sha,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "success", "commit": commit_sha,
+            "changed_file_count": changed, "detail": detail,
+        }), 200
+
+    # target == "github"：workflow_dispatch + 有界轮询真实conclusion
+    if not GITHUB_TOKEN:
+        db.record_target_result(target, "failure", "服务器未配置GITHUB_TOKEN",
+                                 error_category="credentials_missing", retry_recommended=False,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "failure", "error_category": "credentials_missing",
+            "detail": "服务器未配置GitHub凭据", "retry_recommended": False, "cooldown_applied": True,
+        }), 200
+
+    try:
+        gh_result = github_actions.trigger_and_wait(
+            GITHUB_REPO, GITHUB_PAGES_WORKFLOW_FILE, GITHUB_TOKEN,
+            wait_seconds=GITHUB_ACTIONS_WAIT_SECONDS,
+        )
+    except github_actions.GitHubActionsError as e:
+        db.record_target_result(target, "failure", e.detail, error_category=e.error_category,
+                                 retry_recommended=True, commit_sha=commit_sha,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "failure", "error_category": e.error_category,
+            "detail": e.detail, "retry_recommended": True, "cooldown_applied": True,
+        }), 200
+
+    if gh_result["outcome"] == "success":
+        db.record_target_result(target, "success", "", commit_sha=commit_sha,
+                                 expected_generation=expected_generation)
+        return jsonify({
+            "target": target, "status": "success", "commit": commit_sha, "changed_file_count": changed,
+            "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"], "detail": "",
+        }), 200
+
+    if gh_result["outcome"] == "timeout":
+        # 有界等待到期，conclusion尚未产出：不是"没人关心了"，启动后台
+        # 线程继续跟踪真实结论（见_watch_github_run_in_background()），
+        # HTTP响应本身如实返回running+真实run_id/URL，绝不假装success。
+        _watch_github_run_in_background(target, gh_result["run_id"], gh_result["run_html_url"],
+                                         commit_sha, expected_generation)
+        return jsonify({
+            "target": target, "status": "running", "commit": commit_sha,
+            "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"],
+            "detail": "内容已推送，Actions已触发，结论尚未产出，已转入后台继续跟踪，"
+                      "请稍后查询状态或直接查看Actions页面",
+        }), 202
+
+    # outcome == "failure"：真实conclusion
+    db.record_target_result(target, "failure", f"GitHub Actions run 结论为 {gh_result['conclusion']}",
+                             error_category="actions_run_failed", retry_recommended=True,
+                             commit_sha=commit_sha, expected_generation=expected_generation)
+    return jsonify({
+        "target": target, "status": "failure", "error_category": "actions_run_failed",
+        "detail": f"GitHub Actions run 结论为 {gh_result['conclusion']}",
+        "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"],
+        "retry_recommended": True, "cooldown_applied": True,
+    }), 200
+
+
+@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>/status", methods=["GET"])
+def refresh_target_status(target):
+    return jsonify(db.get_target_status(target, REFRESH_COOLDOWN_SECONDS))
+
+
+@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>", methods=["OPTIONS"])
+@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>/status", methods=["OPTIONS"])
+def refresh_target_options(target):
+    # 实际CORS响应头由_apply_refresh_cors()这个after_request钩子统一加，
+    # 这里只需要针对预检请求返回一个空的成功响应。
+    return Response(status=204)
+
+
+@app.after_request
+def _apply_refresh_cors(response):
+    """只对/api/refresh*路径生效，不是全局CORS。四个域名精确匹配、回显
+    请求方自己的Origin（不是拼通配符），不允许的origin不加这个响应头——
+    浏览器会因此拒绝跨域读取响应内容，等同拒绝。绝不设置
+    Access-Control-Allow-Credentials（本来也不需要携带cookie）。
+    """
+    if request.path.startswith("/api/refresh"):
+        origin = request.headers.get("Origin")
+        if origin in REFRESH_CORS_ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 
 @app.route("/api/finish-read/<post_id>", methods=["POST"])
@@ -647,5 +968,6 @@ def health():
 
 
 if __name__ == "__main__":
-    db.init_db()
+    # 不需要在这里显式调用db.init_db()：db.py的_ensure_schema()会在第一次
+    # 真正访问数据库时（比如下面app.run()收到第一个请求）懒初始化。
     app.run(host="127.0.0.1", port=5000)

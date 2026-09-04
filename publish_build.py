@@ -35,6 +35,7 @@ HTML_DIR = BASE_DIR / "html"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "publish"
 PAGES_JS_SOURCE = BASE_DIR / "static_pages" / "pages-index.js"
 DOWNLOAD_JS_SOURCE = BASE_DIR / "static_pages" / "pages-download.js"
+REFRESH_JS_SOURCE = BASE_DIR / "static_pages" / "pages-refresh.js"
 # 固定版本的JSZip，随publish artifact一起发布，不在页面里引用任何CDN——
 # github.foxzen.me/cf.foxzen.me必须在VPS完全不可用时也能使用下载功能，
 # 运行时依赖外部CDN跟这个目标矛盾。这份文件是构建时一次性从上游下载后
@@ -64,6 +65,7 @@ INDEX_JS_SCRIPT_TAG = '<script src="/static/index.js"></script>'
 PAGES_JS_SCRIPT_TAG = '<script src="/pages-index.js"></script>'
 JSZIP_SCRIPT_TAG = '<script src="/jszip.min.js"></script>'
 DOWNLOAD_JS_SCRIPT_TAG = '<script src="/pages-download.js"></script>'
+REFRESH_JS_SCRIPT_TAG = '<script src="/pages-refresh.js"></script>'
 
 # 插入到#app容器之前的纯静态搜索工具栏。data-role属性是pages-index.js
 # 读取表单值用的钩子，不涉及任何/api/*请求。
@@ -94,6 +96,24 @@ DOWNLOAD_TOOLBAR_HTML = """<div id="pages-download-toolbar" style="margin-bottom
 <button type="button" data-role="export-selected-btn">导出离线版(已勾选)</button>
 <button type="button" data-role="export-tag-btn">导出离线版(当前标签)</button>
 <button type="button" data-role="export-all-btn">导出离线版(全部)</button>
+</div>
+</div>
+"""
+
+# 4-target公开刷新入口：mirror/backup/github/cf四个按钮全部显示，不隐藏
+# 任何一个；当前所在站点由pages-refresh.js通过.refresh-btn-current这个
+# class做视觉强调（这里内嵌的<style>只定义这一个class，不引入外部样式表）。
+# 按钮本身只是普通<button data-role="...">，实际请求逻辑（固定绝对地址、
+# 跨域请求GreenCloud）全部在pages-refresh.js里，跟SEARCH/DOWNLOAD两个
+# 工具栏"HTML只提供骨架和data-role钩子，行为由对应JS文件接管"是同一个分工。
+REFRESH_TOOLBAR_HTML = """<style>.refresh-btn-current{font-weight:bold;outline:2px solid #1a73e8;}</style>
+<div id="pages-refresh-toolbar" style="margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;">
+<div style="font-size:0.9em;color:#666;margin-bottom:8px;">内容刷新（请求会发送到 mirror.foxzen.me 上的执行中心，当前站点已加粗标出）</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<button type="button" data-role="refresh-btn-mirror">刷新 mirror</button>
+<button type="button" data-role="refresh-btn-backup">刷新 backup</button>
+<button type="button" data-role="refresh-btn-github">刷新 github</button>
+<button type="button" data-role="refresh-btn-cf">刷新 cf</button>
 </div>
 </div>
 """
@@ -296,9 +316,12 @@ def _build_index_html(host: str, output_dir: Path) -> str:
     # 会在其基础上接管展示。
     content = content.replace(
         INDEX_JS_SCRIPT_TAG,
-        PAGES_JS_SCRIPT_TAG + "\n" + JSZIP_SCRIPT_TAG + "\n" + DOWNLOAD_JS_SCRIPT_TAG,
+        PAGES_JS_SCRIPT_TAG + "\n" + JSZIP_SCRIPT_TAG + "\n" + DOWNLOAD_JS_SCRIPT_TAG + "\n" + REFRESH_JS_SCRIPT_TAG,
     )
-    content = content.replace('<div id="app">', SEARCH_TOOLBAR_HTML + DOWNLOAD_TOOLBAR_HTML + '<div id="app">')
+    content = content.replace(
+        '<div id="app">',
+        REFRESH_TOOLBAR_HTML + SEARCH_TOOLBAR_HTML + DOWNLOAD_TOOLBAR_HTML + '<div id="app">',
+    )
     # 点击排行榜/下载排行榜/fallback-list三处都用_href_for()同一套逻辑生成
     # canonical链接，这里统一修正，不用区分是哪个区块。必须在html/的目录
     # （posts/、YYYY/等）已经复制进output_dir之后才能调用，见build_publish()
@@ -757,6 +780,8 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         shutil.copy2(PAGES_JS_SOURCE, output_dir / "pages-index.js")
     if DOWNLOAD_JS_SOURCE.exists():
         shutil.copy2(DOWNLOAD_JS_SOURCE, output_dir / "pages-download.js")
+    if REFRESH_JS_SOURCE.exists():
+        shutil.copy2(REFRESH_JS_SOURCE, output_dir / "pages-refresh.js")
     if JSZIP_VENDOR_SOURCE.exists():
         shutil.copy2(JSZIP_VENDOR_SOURCE, output_dir / "jszip.min.js")
 
@@ -790,7 +815,12 @@ _REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME
                     # 这几个缺一个都必须让整个构建失败，而不是悄悄发布一个
                     # 看起来正常、实际缺下载能力的Pages站点。
                     "pages-download.js", "jszip.min.js",
-                    "downloads/blog-full.zip", "downloads/export-all.zip")
+                    "downloads/blog-full.zip", "downloads/export-all.zip",
+                    # 4-target公开刷新入口同样是本轮明确声明的正式功能——
+                    # 缺了这个文件，github.foxzen.me/cf.foxzen.me上就只剩
+                    # 三个按钮或者按钮完全不响应，必须让构建直接失败，
+                    # 而不是悄悄发布一个功能不完整的站点。
+                    "pages-refresh.js")
 
 # search-index.json里每条记录只允许出现这些字段——如果以后有人不小心往
 # _build_search_index()里加了别的字段（比如手滑传入了visitor_key），

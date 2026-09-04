@@ -16,6 +16,8 @@ Environment="TG_BOT_TOKEN=REDACTED"
 
 Environment="TG_CHAT_ID=REDACTED"
 
+Environment="GITHUB_TOKEN=REDACTED"
+
 ExecStart=/root/blog-mirror/venv/bin/gunicorn -w 2 -b 172.17.0.1:5000 app:app
 
 Restart=on-failure

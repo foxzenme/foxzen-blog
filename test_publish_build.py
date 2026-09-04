@@ -1499,6 +1499,108 @@ def test_index_html_has_all_five_download_buttons():
     with_fixture(_run)
 
 
+def test_index_html_has_all_four_refresh_buttons_on_both_hosts():
+    """四站点四按钮的核心回归测试：github.foxzen.me和cf.foxzen.me构建出的
+    index.html必须都同时包含mirror/backup/github/cf四个刷新按钮，不能因为
+    "当前站点是github"就少了别的按钮——四个按钮永远全部显示，只做视觉强调，
+    不隐藏其他三个。"""
+    def _run(tmp, out):
+        import publish_build
+        for host in ("github.foxzen.me", "cf.foxzen.me"):
+            out_host = tmp / f"out_{host}"
+            publish_build.build_publish(host, out_host)
+            content = (out_host / "index.html").read_text(encoding="utf-8")
+            for target in ("mirror", "backup", "github", "cf"):
+                check(f"{host}首页包含刷新按钮: refresh-btn-{target}",
+                      f'data-role="refresh-btn-{target}"' in content)
+            check(f"{host}首页引用pages-refresh.js",
+                  '<script src="/pages-refresh.js"></script>' in content)
+    with_fixture(_run)
+
+
+def test_pages_refresh_js_copied_into_output():
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        check("pages-refresh.js已复制进publish/", (out / "pages-refresh.js").exists())
+    with_fixture(_run)
+
+
+def test_pages_refresh_js_always_uses_absolute_api_base():
+    """github.foxzen.me/cf.foxzen.me没有自己的后端，pages-refresh.js的四个
+    按钮必须始终请求固定的绝对地址（mirror.foxzen.me，唯一有Flask的地方），
+    绝不能退化成相对路径——相对路径会打到静态host自己身上，必然404。"""
+    src = (Path(__file__).parent / "static_pages" / "pages-refresh.js").read_text(encoding="utf-8")
+    check("pages-refresh.js定义了固定的绝对API base",
+          'REFRESH_API_BASE = "https://mirror.foxzen.me"' in src)
+    check("pages-refresh.js的fetch调用基于REFRESH_API_BASE拼接，不是裸相对路径",
+          'fetch(REFRESH_API_BASE + "/api/refresh/"' in src)
+
+
+def test_pages_refresh_js_pure_functions_via_node():
+    """静态检查文件内容之外，真正用node执行pages-refresh.js里的纯函数
+    (currentTargetFromHostname/describeResponse)，验证四个域名的当前站点
+    识别、以及cooldown/busy/success/202四种响应文案的真实JS行为。"""
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过pages-refresh.js的真实JS行为验证")
+        return
+
+    js_path = (Path(__file__).parent / "static_pages" / "pages-refresh.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+    snippet = f"""
+    const P = require("{js_path_js}");
+    console.log("current_target_github", P.currentTargetFromHostname("github.foxzen.me") === "github");
+    console.log("current_target_cf", P.currentTargetFromHostname("cf.foxzen.me") === "cf");
+    console.log("current_target_mirror", P.currentTargetFromHostname("mirror.foxzen.me") === "mirror");
+    console.log("current_target_unknown_host", P.currentTargetFromHostname("evil.example.com") === null);
+    console.log("describe_cooldown", P.describeResponse("mirror", 429, {{cooldown_remaining_seconds: 42}}).includes("42"));
+    console.log("describe_busy", P.describeResponse("github", 409, {{detail: "忙"}}) === "忙");
+    console.log("describe_success", P.describeResponse("cf", 200, {{status: "success", detail: "推送完成"}}).includes("推送完成"));
+    console.log("describe_running_202", P.describeResponse("github", 202, {{detail: "结论未产出", run_html_url: "https://x"}}).includes("https://x"));
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    for name in ("current_target_github", "current_target_cf", "current_target_mirror",
+                 "current_target_unknown_host", "describe_cooldown", "describe_busy",
+                 "describe_success", "describe_running_202"):
+        check(f"pages-refresh.js真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+
+def test_verify_publish_catches_missing_refresh_js():
+    """跟下载功能同等对待：pages-refresh.js缺失必须让构建直接失败，不能
+    悄悄发布一个只有部分按钮能响应的站点。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("github.foxzen.me", out)
+        (out / "pages-refresh.js").unlink()
+        raised = False
+        message = ""
+        try:
+            publish_build.verify_publish(out, "github.foxzen.me")
+        except publish_build.PublishVerificationError as e:
+            raised = True
+            message = str(e)
+        check("verify_publish()识别出缺失的pages-refresh.js并拒绝通过", raised)
+        check("错误信息里提到pages-refresh.js", "pages-refresh.js" in message)
+    with_fixture(_run)
+
+
+def test_refresh_toolbar_does_not_leak_mirror_domain_into_seo_files():
+    """确认新增的刷新工具栏完全不影响robots.txt/sitemap.xml/CNAME这三个
+    verify_publish()专门检查"绝不能残留mirror.foxzen.me"的文件——刷新相关
+    的绝对地址只应该出现在index.html/pages-refresh.js里，这两个文件不在
+    这三个"必须干净"文件的检查范围内（见verify_publish()），本测试确认
+    该范围之外的三个文件确实没有被波及。"""
+    def _run(tmp, out):
+        import publish_build
+        publish_build.build_publish("cf.foxzen.me", out)
+        for name in ("robots.txt", "sitemap.xml", "CNAME"):
+            text = (out / name).read_text(encoding="utf-8")
+            check(f"{name}不包含mirror.foxzen.me", "mirror.foxzen.me" not in text)
+    with_fixture(_run)
+
+
 def test_pages_download_js_no_absolute_domains_or_cdn():
     src = (Path(__file__).parent / "static_pages" / "pages-download.js").read_text(encoding="utf-8")
     for domain in ("github.foxzen.me", "cf.foxzen.me", "backup.foxzen.me", "mirror.foxzen.me"):
@@ -1677,6 +1779,12 @@ def main():
         test_verify_publish_hard_fails_on_dangerous_file_inside_zip,
         test_jszip_vendored_locally_not_via_cdn,
         test_index_html_has_all_five_download_buttons,
+        test_index_html_has_all_four_refresh_buttons_on_both_hosts,
+        test_pages_refresh_js_copied_into_output,
+        test_pages_refresh_js_always_uses_absolute_api_base,
+        test_pages_refresh_js_pure_functions_via_node,
+        test_verify_publish_catches_missing_refresh_js,
+        test_refresh_toolbar_does_not_leak_mirror_domain_into_seo_files,
         test_pages_download_js_no_absolute_domains_or_cdn,
         test_python_and_js_tag_filename_sanitization_agree_on_python_side,
         test_pages_download_js_pure_functions_via_node,

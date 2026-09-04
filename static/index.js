@@ -45,9 +45,6 @@
       doSearch();
     };
 
-    const refreshBtn = el("button", { text: "手动刷新" });
-    refreshBtn.onclick = doRefresh;
-
     const downloadAllBtn = el("button", { text: "打包下载全站" });
     downloadAllBtn.onclick = () => { window.location.href = "/api/download/all"; };
 
@@ -70,9 +67,39 @@
       doExportBase64({ all: true });
     };
 
-    [q, tag, from, to, searchBtn, pageSizeSelect, refreshBtn, downloadAllBtn, downloadSelectedBtn,
+    [q, tag, from, to, searchBtn, pageSizeSelect, downloadAllBtn, downloadSelectedBtn,
      exportSelectedBtn, exportTagBtn, exportAllBtn].forEach((x) => bar.appendChild(x));
     return bar;
+  }
+
+  // 4-target公开刷新入口：mirror/backup/github/cf四个按钮全部显示，不隐藏
+  // 任何一个。当前页面在mirror.foxzen.me/backup.foxzen.me上，两者都是同一个
+  // Flask后端（target在URL路径里，不再靠Host头猜），所以全部用相对路径
+  // fetch()——不管当前停在mirror还是backup，请求都会正确落到同一个后端，
+  // 由后端按target参数本身决定要做什么，不需要跨域（github.foxzen.me/
+  // cf.foxzen.me没有自己的后端，那两个站点用的是static_pages/pages-refresh.js，
+  // 走绝对地址+CORS，是完全独立的另一份实现，这里不复用）。
+  const REFRESH_TARGETS = ["mirror", "backup", "github", "cf"];
+
+  function buildRefreshWidget() {
+    const wrap = el("div", { style: "margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;" });
+    const label = el("div", { style: "font-size:0.9em;color:#666;margin-bottom:8px;", text: "内容刷新" });
+    const bar = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center;" });
+
+    const current = current_target();
+    REFRESH_TARGETS.forEach((target) => {
+      const btn = el("button", { type: "button", text: `刷新 ${target}` });
+      if (target === current) {
+        btn.style.fontWeight = "bold";
+        btn.style.outline = "2px solid #1a73e8";
+      }
+      btn.onclick = () => doRefresh(target, btn);
+      bar.appendChild(btn);
+    });
+
+    wrap.appendChild(label);
+    wrap.appendChild(bar);
+    return wrap;
   }
 
   function humanSize(numBytes) {
@@ -153,27 +180,41 @@
     }
   }
 
-  async function doRefresh() {
-    const btn = event.target;
+  // POST /api/refresh/<target>，target在URL路径里，四个按钮各自请求自己的
+  // target，不会因为点了别的按钮就影响当前站点。响应形状见app.py::
+  // refresh_target()：429=冷却中，409=资源被占用(busy)，202=github有界
+  // 等待到期(Actions结论未产出，不是失败)，200且status为success/failure=
+  // 真实执行完成的结果。
+  async function doRefresh(target, btn) {
     btn.disabled = true;
+    const originalText = btn.textContent;
     btn.textContent = "刷新中...";
     try {
-      const resp = await fetch("/api/refresh", { method: "POST" });
+      const resp = await fetch(`/api/refresh/${target}`, { method: "POST" });
       const data = await resp.json();
       if (resp.status === 429) {
-        alert(data.reason);
-      } else if (data.result && data.result.status === "ok") {
-        alert("刷新完成，正在重新加载列表");
-        doSearch();
+        alert(`距离上次刷新不足5分钟，请${data.cooldown_remaining_seconds}秒后再试`);
+      } else if (resp.status === 409) {
+        alert(data.detail);
+      } else if (resp.status === 202) {
+        alert(`${data.detail}${data.run_html_url ? "\n查看进度: " + data.run_html_url : ""}`);
+      } else if (data.status === "success") {
+        alert(data.detail ? `刷新成功：${data.detail}` : "刷新成功");
+        if (target === current_target()) doSearch();
       } else {
-        alert(`刷新失败: ${JSON.stringify(data.result || data)}`);
+        const detail = data.detail || JSON.stringify(data);
+        alert(`刷新失败: ${detail}${data.run_html_url ? "\n详情: " + data.run_html_url : ""}`);
       }
     } catch (e) {
       alert(`请求失败: ${e}`);
     } finally {
       btn.disabled = false;
-      btn.textContent = "手动刷新";
+      btn.textContent = originalText;
     }
+  }
+
+  function current_target() {
+    return location.hostname === "backup.foxzen.me" ? "backup" : "mirror";
   }
 
   async function doDownloadSelected() {
@@ -249,6 +290,7 @@
     }
   }
 
+  app.appendChild(buildRefreshWidget());
   app.appendChild(buildToolbar());
   fetch(`/api/search?page=1&page_size=${state.pageSize}`).then((r) => r.json()).then((data) => {
     if (data.results) refreshList(data.results, data.page || 1, data.total_pages || 1, data.total || 0);

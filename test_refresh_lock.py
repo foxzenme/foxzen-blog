@@ -513,7 +513,18 @@ def test_scenario_7_fetch_timeout_recorded_and_not_stuck():
             data = resp.get_json()
             check("⑦超时时请求本身仍返回200+status=failure",
                   resp.status_code == 200 and data["status"] == "failure", data)
-            check("⑦detail提到超时", "超时" in data["detail"], data)
+            # S8修复后：对外detail一律是safe_errors的固定模板，不再暴露
+            # "超时"这类具体原因——用error_category区分即可，具体是不是
+            # 超时这类诊断细节改成查内部存储（last_detail）确认。
+            check("⑦对外detail是固定安全摘要，不是原始超时文本",
+                  data["detail"] == "内容抓取失败", data)
+            conn = sqlite3.connect(db.DB_PATH)
+            stored_detail = conn.execute(
+                "SELECT last_detail FROM refresh_targets WHERE target_key='mirror'"
+            ).fetchone()[0]
+            conn.close()
+            check("⑦内部存储的last_detail仍然提到超时，供运维排查具体原因",
+                  "超时" in stored_detail, stored_detail)
         finally:
             os.environ.pop("STUB_SLEEP_SECONDS", None)
 
@@ -581,12 +592,74 @@ def test_import_app_does_not_write_real_database():
     # 真实data/blog.db未被修改的断言在with_temp_app_env()内部自动执行。
 
 
+def test_schema_ready_is_bound_to_db_path_not_process_wide():
+    """最后复核项之一：_schema_ready之前是进程级单个布尔值，只要本进程里
+    曾经对任意一个DB_PATH完成过一次懒初始化，这个布尔值就永久变成True。
+    之后哪怕把db.DB_PATH切换到一个从未初始化过的全新路径B，_ensure_schema()
+    也会因为这个全局布尔值已经是True而直接短路跳过——B的数据库文件会被
+    sqlite3.connect()静默自动创建成一个没有任何表的空文件，第一条真实SQL
+    就会因为"no such table"报错。
+
+    这里刻意不通过with_temp_db()/with_temp_app_env()两个共享fixture：
+    它们在切换db.DB_PATH之后都会显式调用一次db.init_db()，而init_db()
+    自己的函数体本身就无条件执行一遍executescript(SCHEMA)——即使
+    _ensure_schema()内部因为旧bug被短路跳过，init_db()自己仍然会把表
+    建出来，这两个fixture反而会"意外掩盖"这个bug，测不出问题。要真正
+    验证_ensure_schema()自己的懒初始化是否正确按DB_PATH区分，必须像
+    try_acquire_lock()这类真实业务函数一样，只经过_ensure_schema()（不
+    显式调用init_db()），才能验证到位。
+    """
+    import db
+    orig_db_path = db.DB_PATH
+    real_db_mtime = REAL_DB.stat().st_mtime if REAL_DB.exists() else None
+    tmp = Path(tempfile.mkdtemp(prefix="schema_path_test_"))
+    try:
+        path_a = tmp / "a.db"
+        path_b = tmp / "b.db"
+
+        db.DB_PATH = path_a
+        result_a = db.try_acquire_lock("content_fetch", 60)
+        check("路径A首次懒初始化成功，能正常acquire锁（证明schema已建好）",
+              result_a["acquired"] is True, result_a)
+        if result_a["acquired"]:
+            db.release_lock("content_fetch", result_a["generation"], "ok")
+
+        db.DB_PATH = path_b
+        result_b = db.try_acquire_lock("content_fetch", 60)
+        check("路径B（全新、从未初始化过）切换后同样能正常懒初始化，不会"
+              "因为路径A已经初始化过就被跳过（本次修复的核心断言）",
+              result_b["acquired"] is True, result_b)
+        if result_b["acquired"]:
+            db.release_lock("content_fetch", result_b["generation"], "ok")
+
+        conn_a = sqlite3.connect(path_a)
+        check("路径A的数据库文件里真的有refresh_locks表",
+              conn_a.execute(
+                  "SELECT name FROM sqlite_master WHERE type='table' AND name='refresh_locks'"
+              ).fetchone() is not None)
+        conn_a.close()
+
+        conn_b = sqlite3.connect(path_b)
+        check("路径B的数据库文件里也真的有refresh_locks表（不是空文件）",
+              conn_b.execute(
+                  "SELECT name FROM sqlite_master WHERE type='table' AND name='refresh_locks'"
+              ).fetchone() is not None)
+        conn_b.close()
+    finally:
+        db.DB_PATH = orig_db_path
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if real_db_mtime is not None:
+        check("测试过程未修改真实data/blog.db（mtime不变）",
+              REAL_DB.stat().st_mtime == real_db_mtime)
+
+
 def test_credentials_not_leaked_in_response():
     def _run(tmp, db, app_module):
         secret_token = "ghp_SUPER_SECRET_VALUE_SHOULD_NEVER_LEAK"
         app_module.GITHUB_TOKEN = secret_token
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "deadbeef", "changed_file_count": 1,
+            "pushed": True, "commit_sha": "deadbeef", "changed_file_count": 1, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "success", "run_id": 1, "run_html_url": "https://github.com/x/y/actions/runs/1",
@@ -606,6 +679,157 @@ def test_credentials_not_leaked_in_response():
     with_temp_app_env(_run)
 
 
+# S8修复的回归测试用：构造一条同时包含服务器绝对路径/Blogger feed URL/
+# 疑似token/"Authorization"字样/Git远程URL的"脏"文本，模拟一次真实失败时
+# stderr/异常文本里可能出现的任意内容——不管具体是哪个环节产生的，POST
+# 直接响应和GET .../status都不应该原样透出其中任何一段。
+_S8_SENSITIVE_MARKERS = [
+    "/root/secret/path",
+    "https://foxzenme.blogspot.com/feeds/posts/default",
+    "ghp_FAKESECRETTOKENVALUE1234567890",
+    "Authorization",
+    "https://github.com/foxzenme/foxzen-blog.git",
+]
+
+
+def _s8_leaky_text():
+    return (
+        "git push失败: fatal: unable to access "
+        "'https://ghp_FAKESECRETTOKENVALUE1234567890@github.com/foxzenme/foxzen-blog.git/': "
+        "Authorization failed while reading /root/secret/path/.git-credentials, "
+        "feed https://foxzenme.blogspot.com/feeds/posts/default unreachable"
+    )
+
+
+def test_s8_git_publish_failure_never_leaks_sensitive_content():
+    """S8：git_publish失败时的detail完全由safe_errors按error_category生成
+    固定摘要，不管git_publish.commit_and_push()实际返回的原始detail里有
+    什么（这里故意让它是一段包含路径/feed URL/疑似token/Git远程URL的
+    "脏"文本），POST响应和之后的GET .../status都绝不能原样透出。
+    """
+    def _run(tmp, db, app_module):
+        app_module.GITHUB_TOKEN = "fake-token-for-test"
+        app_module.git_publish.commit_and_push = lambda *a, **kw: {
+            "pushed": False, "error_category": "git_push_error", "detail": _s8_leaky_text(),
+        }
+        client = app_module.app.test_client()
+
+        resp = client.post("/api/refresh/cf")
+        body_text = resp.get_data(as_text=True)
+        for marker in _S8_SENSITIVE_MARKERS:
+            check(f"git_publish失败的POST响应不包含: {marker!r}", marker not in body_text, body_text)
+        check("POST响应detail是safe_errors的固定模板文案",
+              resp.get_json()["detail"] == "Git 推送失败", resp.get_json())
+
+        status_resp = client.get("/api/refresh/cf/status")
+        status_text = status_resp.get_data(as_text=True)
+        for marker in _S8_SENSITIVE_MARKERS:
+            check(f"git_publish失败的status端点不包含: {marker!r}", marker not in status_text, status_text)
+        check("status端点last_result.detail同样是固定模板文案",
+              status_resp.get_json()["last_result"]["detail"] == "Git 推送失败", status_resp.get_json())
+
+        # 内部存储允许（也应该）保留路径/feed URL/git远程URL这类诊断信息，
+        # 供运维通过sqlite3直接排查——这不是遗漏，是S8要求2明确允许的
+        # "内部日志可以保留必要诊断信息"，只是这份诊断信息绝不能经HTTP出去
+        # （上面两组断言已经验证过）。
+        conn = sqlite3.connect(db.DB_PATH)
+        stored_detail = conn.execute(
+            "SELECT last_detail FROM refresh_targets WHERE target_key='cf'"
+        ).fetchone()[0]
+        conn.close()
+        check("内部存储仍保留完整诊断信息（路径/feed URL/git远程URL），供运维排查",
+              "/root/secret/path" in stored_detail
+              and "blogspot.com/feeds" in stored_detail
+              and "github.com/foxzenme" in stored_detail, stored_detail)
+    with_temp_app_env(_run)
+
+
+def test_s8_content_fetch_failure_never_leaks_sensitive_content():
+    """S8：content_fetch失败时（mirror/backup直接返回，github/cf提前终止）
+    的detail同样必须是固定模板，不能是fetch_blog.py子进程的原始stderr。
+    额外验证：子进程stderr里如果真的出现了这次实际配置的GITHUB_TOKEN值，
+    even内部存储(last_detail)也会把它redact掉——这是S8要求2单独针对
+    "内部日志/存储也不能包含真实token"的防线，跟"外部一律走固定模板"是
+    两件独立的事：路径/feed URL这类非credential诊断信息应该继续留在内部
+    存储里，只有真正的凭据值需要被redact。
+    """
+    def _run(tmp, db, app_module):
+        real_token = "ghp_THE_REAL_CONFIGURED_TOKEN_FOR_THIS_TEST"
+        app_module.GITHUB_TOKEN = real_token
+
+        leaky_stub = tmp / "leaky_stub.py"
+        leaky_stub.write_text(
+            "import sys\n"
+            "sys.stderr.write(\n"
+            "    'Traceback: failed reading /root/secret/path, '\n"
+            "    'feed https://foxzenme.blogspot.com/feeds/posts/default timed out, '\n"
+            "    'Authorization header leaked token " + real_token + ", '\n"
+            "    'remote https://github.com/foxzenme/foxzen-blog.git\\n'\n"
+            ")\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        app_module.FETCH_SCRIPT = leaky_stub
+        client = app_module.app.test_client()
+
+        resp = client.post("/api/refresh/mirror")
+        body_text = resp.get_data(as_text=True)
+        # 这个场景里stub打印的是这次实际配置的real_token，不是_S8_SENSITIVE_MARKERS
+        # 里那个通用占位token字符串，所以路径/feed URL/"Authorization"字样/git URL
+        # 这4项按原样检查，token单独用real_token检查（见下面几行）。
+        for marker in (m for m in _S8_SENSITIVE_MARKERS if m != "ghp_FAKESECRETTOKENVALUE1234567890"):
+            check(f"content_fetch失败的POST响应不包含: {marker!r}", marker not in body_text, body_text)
+        check("mirror POST响应不包含这次真实配置的token", real_token not in body_text, body_text)
+        check("mirror失败响应detail是safe_errors的固定模板文案",
+              resp.get_json()["detail"] == "内容抓取失败", resp.get_json())
+
+        status_resp = client.get("/api/refresh/mirror/status")
+        status_text = status_resp.get_data(as_text=True)
+        check("mirror status端点不包含这次真实配置的token", real_token not in status_text, status_text)
+        check("mirror status端点不包含服务器路径", "/root/secret/path" not in status_text, status_text)
+
+        conn = sqlite3.connect(db.DB_PATH)
+        stored_detail = conn.execute(
+            "SELECT last_detail FROM refresh_targets WHERE target_key='mirror'"
+        ).fetchone()[0]
+        conn.close()
+        check("内部存储里真实token被redact掉（S8要求2：内部日志也不能包含token）",
+              real_token not in stored_detail, stored_detail)
+        check("内部存储仍保留非credential的诊断信息（路径/feed URL/git远程URL），"
+              "证明不是把整段detail都吞掉了", "/root/secret/path" in stored_detail
+              and "blogspot.com/feeds" in stored_detail, stored_detail)
+    with_temp_app_env(_run)
+
+
+def test_s8_github_actions_error_never_leaks_sensitive_content():
+    """S8：github_actions.GitHubActionsError冒泡到app.py时的detail同样必须
+    走固定模板，不管github_actions.py那边原始异常文本里有什么。
+    """
+    def _run(tmp, db, app_module):
+        app_module.GITHUB_TOKEN = "fake-token-for-test"
+        app_module.git_publish.commit_and_push = lambda *a, **kw: {
+            "pushed": True, "commit_sha": "deadbeef", "changed_file_count": 1, "push_state": "pushed",
+        }
+
+        def _raise(*a, **kw):
+            raise app_module.github_actions.GitHubActionsError("run_identification_error", _s8_leaky_text())
+        app_module.github_actions.trigger_and_wait = _raise
+
+        client = app_module.app.test_client()
+        resp = client.post("/api/refresh/github")
+        body_text = resp.get_data(as_text=True)
+        for marker in _S8_SENSITIVE_MARKERS:
+            check(f"GitHubActionsError的POST响应不包含: {marker!r}", marker not in body_text, body_text)
+        check("POST响应detail是safe_errors的固定模板文案",
+              resp.get_json()["detail"] == "无法确认本次触发对应的 GitHub Actions 运行", resp.get_json())
+
+        status_resp = client.get("/api/refresh/github/status")
+        status_text = status_resp.get_data(as_text=True)
+        for marker in _S8_SENSITIVE_MARKERS:
+            check(f"GitHubActionsError的status端点不包含: {marker!r}", marker not in status_text, status_text)
+    with_temp_app_env(_run)
+
+
 def test_github_full_success_flow_mocked():
     """github完整两阶段流程：content_fetch(真stub子进程) -> git_publish
     (mock) -> workflow_dispatch+轮询(mock)，全程不碰真实git/GitHub。
@@ -613,7 +837,7 @@ def test_github_full_success_flow_mocked():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "abc123def456", "changed_file_count": 3,
+            "pushed": True, "commit_sha": "abc123def456", "changed_file_count": 3, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "success", "run_id": 555, "run_html_url": "https://github.com/x/y/actions/runs/555",
@@ -632,7 +856,7 @@ def test_cf_full_success_flow_mocked():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "cf789xyz", "changed_file_count": 2,
+            "pushed": True, "commit_sha": "cf789xyz", "changed_file_count": 2, "push_state": "pushed",
         }
         client = app_module.app.test_client()
         resp = client.post("/api/refresh/cf")
@@ -654,7 +878,7 @@ def test_no_html_changes_skips_publish_and_dispatch():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "unchanged-sha", "changed_file_count": 0,
+            "pushed": True, "commit_sha": "unchanged-sha", "changed_file_count": 0, "push_state": "noop",
         }
         dispatch_calls = []
 
@@ -673,6 +897,197 @@ def test_no_html_changes_skips_publish_and_dispatch():
     with_temp_app_env(_run)
 
 
+def test_pending_push_backlog_with_no_new_changes_still_dispatches():
+    """B2的app.py集成回归：changed_file_count==0但push_state=="pushed"
+    ——对应"这一轮html/本身没有新变化，但补上了之前某次push失败遗留的
+    本地commit，这次真正推送出去了"这个场景（git_publish.py单元测试里
+    test_pending_commit_from_previous_failed_push_is_retried()已经验证
+    过底层commit_and_push()本身的行为，这里额外验证app.py这一层不会因为
+    changed==0就误判成"内容无变化"而跳过github的workflow_dispatch——
+    那样会让这批终于推送出去的内容永远没有真正部署到线上。
+    """
+    def _run(tmp, db, app_module):
+        app_module.GITHUB_TOKEN = "fake-token-for-test"
+        app_module.git_publish.commit_and_push = lambda *a, **kw: {
+            "pushed": True, "commit_sha": "backlog-sha", "changed_file_count": 0, "push_state": "pushed",
+        }
+        dispatch_calls = []
+
+        def recording_dispatch(*a, **kw):
+            dispatch_calls.append((a, kw))
+            return {"outcome": "success", "run_id": 1, "run_html_url": "x"}
+        app_module.github_actions.trigger_and_wait = recording_dispatch
+
+        client = app_module.app.test_client()
+        resp = client.post("/api/refresh/github")
+        data = resp.get_json()
+        check("changed==0但push_state=pushed时仍然是success", data["status"] == "success", data)
+        check("detail不能声称内容无变化（这次确实推送了遗留的commit）",
+              "无变化" not in data["detail"], data)
+        check("必须继续触发workflow_dispatch，不能因为changed==0就跳过部署",
+              len(dispatch_calls) == 1, dispatch_calls)
+    with_temp_app_env(_run)
+
+
+def test_unexpected_exception_from_github_actions_still_records_failure_not_bare_500():
+    """S4的app.py层防御性兜底：即使github_actions.py内部万一有没被转换成
+    GitHubActionsError的异常类型漏网，也不能让/api/refresh/github整个
+    以Flask默认的裸500结束——push已经真的成功了，必须记录一个可审计的
+    failure结果，而不是让用户和refresh_targets都对这次的真实结果一无所知。
+    """
+    def _run(tmp, db, app_module):
+        app_module.GITHUB_TOKEN = "fake-token-for-test"
+        app_module.git_publish.commit_and_push = lambda *a, **kw: {
+            "pushed": True, "commit_sha": "sha-unexpected", "changed_file_count": 1, "push_state": "pushed",
+        }
+
+        def raising_trigger_and_wait(*a, **kw):
+            raise RuntimeError("模拟一个没有被github_actions.py转换过的意外异常类型")
+        app_module.github_actions.trigger_and_wait = raising_trigger_and_wait
+
+        client = app_module.app.test_client()
+        resp = client.post("/api/refresh/github")
+        check("即使发生未预期异常类型，也不是Flask默认裸500", resp.status_code != 500, resp.status_code)
+        data = resp.get_json()
+        check("明确报告failure，而不是崩溃", data is not None and data.get("status") == "failure", data)
+        check("error_category=internal_error", data.get("error_category") == "internal_error", data)
+
+        status = db.get_target_status("github", 300)
+        check("即使是这种未预期异常路径，github的target结果也被真实记录下来，不是永远停留在旧状态",
+              status["last_result"] is not None and status["last_result"]["status"] == "failure", status)
+    with_temp_app_env(_run)
+
+
+def test_git_publish_stale_threshold_does_not_falsely_trigger_within_worst_case_duration():
+    """S2回归：GIT_PUBLISH_STALE_SECONDS必须大于git_publish临界区真实最坏
+    情况耗时（约170s，见app.py里逐项计算的注释），用app_module实际配置的
+    这个常量本身做验证（而不是测试里另起一个硬编码数字）——常量以后被
+    调整，这个测试会自动跟着用新值验证，不会因为常量改了、测试还在用
+    旧数字而失去意义。两头都要测：仍在阈值内的年龄不能被误判为stale，
+    明显超过阈值的年龄必须真的被判定为stale。
+    """
+    def _run(tmp, db, app_module):
+        threshold = app_module.GIT_PUBLISH_STALE_SECONDS
+        db.try_acquire_lock("git_publish", threshold, triggered_by="github")
+
+        conn = sqlite3.connect(db.DB_PATH)
+        aged_ts = (datetime.now() - timedelta(seconds=threshold - 50)).isoformat(timespec="seconds")
+        conn.execute("UPDATE refresh_locks SET started_at=? WHERE lock_key='git_publish'", (aged_ts,))
+        conn.commit()
+        conn.close()
+
+        still_running = db.try_acquire_lock("git_publish", threshold, triggered_by="cf")
+        check(f"年龄{threshold - 50}s(仍在{threshold}s阈值内)时，正常运行中的git_publish"
+              "不会被误判为stale而被抢占",
+              still_running["acquired"] is False, still_running)
+
+        conn = sqlite3.connect(db.DB_PATH)
+        very_old_ts = (datetime.now() - timedelta(seconds=threshold + 10)).isoformat(timespec="seconds")
+        conn.execute("UPDATE refresh_locks SET started_at=? WHERE lock_key='git_publish'", (very_old_ts,))
+        conn.commit()
+        conn.close()
+
+        recovered = db.try_acquire_lock("git_publish", threshold, triggered_by="cf")
+        check(f"年龄明显超过{threshold}s阈值时，确实会被判定为stale并恢复",
+              recovered["acquired"] is True, recovered)
+    with_temp_app_env(_run)
+
+
+def test_stale_running_lock_reported_as_stale_not_forever_running():
+    """S3：worker崩溃、锁行还停留在status=running，但年龄已经超过它自己的
+    stale阈值时，status查询接口必须能看出"这看起来已经不是真的在跑了"，
+    不能无限期地显示running——同时不能因为查询就顺手把锁回收掉，回收动作
+    仍然只应该发生在真正有人acquire的时候（fencing安全性不能因为这个
+    只读查询而被破坏）。
+    """
+    def _run(tmp, db):
+        db.try_acquire_lock("content_fetch", 420, target_key="mirror",
+                             cooldown_seconds=0, triggered_by="mirror")
+        conn = sqlite3.connect(db.DB_PATH)
+        old_ts = (datetime.now() - timedelta(seconds=1000)).isoformat(timespec="seconds")
+        conn.execute("UPDATE refresh_locks SET started_at=? WHERE lock_key='content_fetch'", (old_ts,))
+        conn.commit()
+        conn.close()
+
+        status = db.get_target_status("mirror", 300, {"content_fetch": 420, "git_publish": 120})
+        check("锁年龄超过content_fetch自己的stale阈值时，状态报告为stale，不是永远running",
+              status["state"] == "stale", status)
+
+        conn = db.get_conn()
+        row = dict(conn.execute("SELECT status FROM refresh_locks WHERE lock_key='content_fetch'").fetchone())
+        conn.close()
+        check("只读状态查询本身没有把锁悄悄改回idle（回收动作仍然只能发生在acquire时）",
+              row["status"] == "running", row)
+
+        status_no_threshold = db.get_target_status("mirror", 300)
+        check("不提供lock_stale_seconds时保持旧行为，仍然报告running（不强制要求调用方提供阈值）",
+              status_no_threshold["state"] == "running", status_no_threshold)
+    with_temp_db(_run)
+
+
+def test_last_result_is_current_true_when_result_matches_latest_generation():
+    def _run(tmp, db):
+        acquire = db.try_acquire_lock("content_fetch", 420, target_key="mirror",
+                                       cooldown_seconds=0, triggered_by="mirror")
+        db.release_lock("content_fetch", acquire["generation"], "ok", "done")
+        db.record_target_result("mirror", "success", "", expected_generation=acquire["target_generation"])
+
+        status = db.get_target_status("mirror", 300)
+        check("刚写完的结果对应当前最新generation，last_result_is_current=True",
+              status["last_result_is_current"] is True, status)
+    with_temp_db(_run)
+
+
+def test_last_result_is_current_false_when_newer_attempt_never_recorded_result():
+    """S6核心场景：target又发起了新一轮（generation前进），但新一轮因为
+    某种原因（这里直接模拟：故意不调用record_target_result，对应真实场景
+    里git_publish被409拒绝、或者进程被杀、或者后台watcher被worker重启
+    丢失）从未写回自己的结果——此时last_result展示的必然是更早一轮的
+    陈旧结果，last_result_is_current必须明确为False，不能让调用方误以为
+    这就是最近一次尝试的真实结果。
+    """
+    def _run(tmp, db):
+        acquire1 = db.try_acquire_lock("content_fetch", 420, target_key="mirror",
+                                        cooldown_seconds=0, triggered_by="mirror")
+        db.release_lock("content_fetch", acquire1["generation"], "ok", "first run")
+        db.record_target_result("mirror", "success", "第一轮真的成功了",
+                                 expected_generation=acquire1["target_generation"])
+
+        # 第二轮：acquire成功（generation前进），但模拟"从未走到record_target_result
+        # 那一步"就结束了（比如后续步骤被409拒绝、或进程被杀）。
+        acquire2 = db.try_acquire_lock("content_fetch", 420, target_key="mirror",
+                                        cooldown_seconds=0, triggered_by="mirror")
+        db.release_lock("content_fetch", acquire2["generation"], "ok",
+                         "second run acquired but never recorded result")
+
+        status = db.get_target_status("mirror", 300)
+        check("last_result仍然保留着第一轮的历史结果，没有被清空(status字段还在)",
+              status["last_result"] is not None and status["last_result"]["status"] == "success", status)
+        check("但last_result_is_current必须是False，明确提示这不是最近一轮的真实结果",
+              status["last_result_is_current"] is False, status)
+
+        # S8修复后get_target_status()对外的detail一律是safe_errors的固定
+        # 模板，不再透传"第一轮真的成功了"这段原始文本——但这不代表底层
+        # 数据被清空/覆盖，直接查refresh_targets.last_detail列确认原始
+        # 文本确实还完整保留在内部存储里。
+        conn = sqlite3.connect(db.DB_PATH)
+        stored_detail = conn.execute(
+            "SELECT last_detail FROM refresh_targets WHERE target_key='mirror'"
+        ).fetchone()[0]
+        conn.close()
+        check("内部存储(last_detail列)确实保留着第一轮的原始文本，只是对外不再透传",
+              "第一轮真的成功了" in stored_detail, stored_detail)
+    with_temp_db(_run)
+
+
+def test_last_result_is_current_none_when_never_completed_any_round():
+    def _run(tmp, db):
+        status = db.get_target_status("mirror", 300)
+        check("从来没有任何一轮真正写完结果时，last_result_is_current应为None（不适用），不是False",
+              status["last_result_is_current"] is None and status["last_result"] is None, status)
+    with_temp_db(_run)
+
+
 def test_github_cf_refresh_does_not_touch_mirror_backup_target_state():
     """github/cf刷新只最终发布github/cf自己，不能因为它们内部复用了
     content_fetch这个共享步骤，就顺便把mirror/backup的cooldown/结果记录
@@ -681,7 +1096,7 @@ def test_github_cf_refresh_does_not_touch_mirror_backup_target_state():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "sha1", "changed_file_count": 2,
+            "pushed": True, "commit_sha": "sha1", "changed_file_count": 2, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "success", "run_id": 1, "run_html_url": "x",
@@ -703,7 +1118,7 @@ def test_github_actions_failure_reported_as_real_failure():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "sha-fail", "changed_file_count": 1,
+            "pushed": True, "commit_sha": "sha-fail", "changed_file_count": 1, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "failure", "run_id": 42, "run_html_url": "x", "conclusion": "failure",
@@ -730,7 +1145,7 @@ def test_github_actions_timeout_returns_202_not_fake_success():
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "sha-timeout", "changed_file_count": 1,
+            "pushed": True, "commit_sha": "sha-timeout", "changed_file_count": 1, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "timeout", "run_id": 77, "run_html_url": "https://github.com/x/y/actions/runs/77",
@@ -766,7 +1181,7 @@ def test_github_timeout_spawns_background_watcher_that_eventually_records_real_r
     def _run(tmp, db, app_module):
         app_module.GITHUB_TOKEN = "fake-token-for-test"
         app_module.git_publish.commit_and_push = lambda *a, **kw: {
-            "pushed": True, "commit_sha": "watch-me-sha", "changed_file_count": 1,
+            "pushed": True, "commit_sha": "watch-me-sha", "changed_file_count": 1, "push_state": "pushed",
         }
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "timeout", "run_id": 999, "run_html_url": "https://github.com/x/y/actions/runs/999",
@@ -999,10 +1414,21 @@ def main():
         test_scenario_5_running_rejection_returns_409,
         test_illegal_target_rejected,
         test_import_app_does_not_write_real_database,
+        test_schema_ready_is_bound_to_db_path_not_process_wide,
         test_credentials_not_leaked_in_response,
+        test_s8_git_publish_failure_never_leaks_sensitive_content,
+        test_s8_content_fetch_failure_never_leaks_sensitive_content,
+        test_s8_github_actions_error_never_leaks_sensitive_content,
         test_github_full_success_flow_mocked,
         test_cf_full_success_flow_mocked,
         test_no_html_changes_skips_publish_and_dispatch,
+        test_pending_push_backlog_with_no_new_changes_still_dispatches,
+        test_unexpected_exception_from_github_actions_still_records_failure_not_bare_500,
+        test_git_publish_stale_threshold_does_not_falsely_trigger_within_worst_case_duration,
+        test_stale_running_lock_reported_as_stale_not_forever_running,
+        test_last_result_is_current_true_when_result_matches_latest_generation,
+        test_last_result_is_current_false_when_newer_attempt_never_recorded_result,
+        test_last_result_is_current_none_when_never_completed_any_round,
         test_github_cf_refresh_does_not_touch_mirror_backup_target_state,
         test_github_actions_failure_reported_as_real_failure,
         test_github_actions_timeout_returns_202_not_fake_success,

@@ -71,5 +71,11 @@ data/blog.db-wal
 # Pages发布构建产物(由publish_build.py现场生成，不需要进Git)
 /publish/
 
-# 图片
-*.png   
+# 图片（仓库根目录等处的杂项图片不需要进Git）
+*.png
+# S1修复：上面这条全局规则会连带吞掉html/发布目录下博客正文的图片
+# （html/posts/<id>/media/*.png、html/images/*.png等），导致git_publish.py
+# 的`git add -- html`永远看不到新增图片，github/cf发布出来的文章会缺图，
+# 却仍然报告发布成功——html/是实际发布内容，不是"杂项图片"这条规则原本
+# 想排除的对象，必须排除在外。
+!html/**/*.png

@@ -18,7 +18,17 @@ Environment="TG_CHAT_ID=REDACTED"
 
 Environment="GITHUB_TOKEN=REDACTED"
 
-ExecStart=/root/blog-mirror/venv/bin/gunicorn -w 2 -b 172.17.0.1:5000 app:app
+# B4修复：gunicorn默认的sync worker超时是30秒，远小于refresh pipeline的
+# 真实最坏执行时间——content_fetch(最长300s) + git_publish临界区
+# (最长约170s，见app.py的GIT_PUBLISH_STALE_SECONDS注释里的逐项计算)
+# + GitHub Actions有界同步等待(最长90s) = 约560s。默认30秒超时下，worker
+# 会在content_fetch跑到一半时就被SIGABRT/SIGKILL，fetch_blog.py被腰斩、
+# 在html/留下半成品文件，且客户端只会收到502/504而不是正常的JSON响应
+# ——整个90秒/202/后台watcher的设计在这个默认值下根本无法被触达。
+# 这里显式设置--timeout=900，在560秒最坏情况之上留了超过50%的余量。
+# 注意：这个文件本身只有被重新部署（复制到VPS并重启systemd服务）之后
+# 才会真正生效，本次修改不涉及、也没有SSH登录VPS执行任何操作。
+ExecStart=/root/blog-mirror/venv/bin/gunicorn -w 2 --timeout 900 -b 172.17.0.1:5000 app:app
 
 Restart=on-failure
 

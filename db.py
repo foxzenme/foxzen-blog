@@ -21,6 +21,8 @@ import json
 from pathlib import Path
 from datetime import datetime, date, timedelta
 
+import safe_errors
+
 DB_PATH = Path(__file__).parent / "data" / "blog.db"
 
 SCHEMA = """
@@ -168,7 +170,15 @@ CREATE TABLE IF NOT EXISTS refresh_targets (
     last_error_category      TEXT,
     last_detail                TEXT,
     last_commit_sha              TEXT,        -- mirror/backup恒为NULL；github/cf是实际commit sha
-    last_retry_recommended         INTEGER    -- 0/1，仅failure时有意义
+    last_retry_recommended         INTEGER,   -- 0/1，仅failure时有意义
+    last_result_generation          INTEGER  -- S6修复：last_status等字段实际对应的那一轮generation
+                                               -- （record_target_result()写入时的generation值），
+                                               -- 不一定等于当前generation列——如果之后又发起过新一轮
+                                               -- 刷新(generation前进)但那一轮从未成功写回结果(比如
+                                               -- git_publish被409拒绝、进程被杀、后台watcher因worker
+                                               -- 重启丢失)，两者就会不相等，get_target_status()据此
+                                               -- 判断last_result是否还能代表"最近一次尝试"，见
+                                               -- get_target_status()文档字符串
 );
 """
 
@@ -223,6 +233,7 @@ def init_db():
         ("last_finished_at", "TEXT"), ("last_status", "TEXT"),
         ("last_error_category", "TEXT"), ("last_detail", "TEXT"),
         ("last_commit_sha", "TEXT"), ("last_retry_recommended", "INTEGER"),
+        ("last_result_generation", "INTEGER"),
     ):
         if not _column_exists(conn, "refresh_targets", col):
             conn.execute(f"ALTER TABLE refresh_targets ADD COLUMN {col} {coltype}")
@@ -232,7 +243,7 @@ def init_db():
     conn.close()
 
 
-_schema_ready = False
+_schema_ready_paths = set()
 
 
 def _ensure_schema():
@@ -242,19 +253,37 @@ def _ensure_schema():
     测试、不管有没有先改db.DB_PATH）都会立刻对当时db.DB_PATH指向的文件执行一次
     schema操作——这正是真实data/blog.db被测试意外污染出refresh_locks/
     refresh_targets两张空表的根因。这里改成"首次真正用到数据库时才做"，
-    且用进程内标记只做一次：无论调用方是生产环境的gunicorn worker，还是
-    测试里先把db.DB_PATH指向临时文件再触发任何数据库操作，_ensure_schema()
-    执行的时刻，DB_PATH早已经是调用方真正想要的那个路径，不会再有"import
-    的时候路径还没来得及被覆盖"这种时序问题。
+    无论调用方是生产环境的gunicorn worker，还是测试里先把db.DB_PATH指向
+    临时文件再触发任何数据库操作，_ensure_schema()执行的时刻，DB_PATH早已经
+    是调用方真正想要的那个路径，不会再有"import的时候路径还没来得及被覆盖"
+    这种时序问题。
 
-    先置_schema_ready=True再调用init_db()：init_db()内部会调get_conn()，
-    get_conn()又会调_ensure_schema()——不先置位会无限递归；置位之后
-    再重入直接短路返回，不会重复执行schema操作。
+    复核阶段修复：标记"是否已初始化"必须按DB_PATH本身区分，不能是单个
+    进程级布尔值——同一个Python进程完全可能在生命周期内把db.DB_PATH从A
+    改指向B（测试就是这么做的：每个测试用例各自的临时数据库），旧实现里
+    只要进程内曾经对任意一个路径完成过一次懒初始化，这个布尔值就永久变成
+    True，之后哪怕换成一个从未初始化过的全新路径B，也会被误判成"已经
+    ready"而直接短路跳过——B的数据库文件会被sqlite3.connect()静默自动
+    创建成一个没有任何表的空文件，第一条真实SQL就会因为"no such table"
+    报错，或者更隐蔽地，如果B恰好是一个已存在但schema陈旧的文件，还会
+    连带跳过本该执行的ALTER TABLE迁移。改成一个集合，按DB_PATH.resolve()
+    记录每个路径各自是否已经初始化——用resolve()而不是直接用Path对象或
+    原始字符串做key，是为了让"同一个物理文件，只是一次用相对路径、一次用
+    绝对路径写"这种表面不同、实际相同的Path不会被误判成两个不同的数据库；
+    resolve()不要求文件已经存在也能正常工作（不抛异常），对懒初始化里
+    "路径对应的文件还没被创建"这种最常见的场景同样安全。生产环境gunicorn
+    worker只会用同一个固定DB_PATH，行为跟修复前完全一致：进程生命周期内
+    第一次真实数据库访问触发一次init_db()，此后所有访问都命中缓存直接
+    返回，不会重复执行schema操作。
+
+    先把这个路径记进_schema_ready_paths再调用init_db()：init_db()内部会调
+    get_conn()，get_conn()又会调_ensure_schema()——不先记录会无限递归；
+    记录之后同一路径再重入直接短路返回。
     """
-    global _schema_ready
-    if _schema_ready:
+    resolved_path = DB_PATH.resolve()
+    if resolved_path in _schema_ready_paths:
         return
-    _schema_ready = True
+    _schema_ready_paths.add(resolved_path)
     init_db()
 
 
@@ -487,16 +516,21 @@ def record_target_result(target_key: str, status: str, detail: str = "",
         cur = conn.execute("""
             UPDATE refresh_targets
             SET last_finished_at=?, last_status=?, last_error_category=?, last_detail=?,
-                last_commit_sha=?, last_retry_recommended=?
+                last_commit_sha=?, last_retry_recommended=?, last_result_generation=generation
             WHERE target_key=? AND generation=?
         """, (datetime.now().isoformat(timespec="seconds"), status, error_category, (detail or "")[:500],
               commit_sha, (None if retry_recommended is None else int(bool(retry_recommended))),
               target_key, expected_generation))
     else:
+        # last_result_generation=generation是同一行内的列自引用（UPDATE
+        # 单条语句内原子读写同一行，没有额外的读-改-写竞态）：没有提供
+        # expected_generation时，直接记录"写入这一刻这一行实际的generation
+        # 是多少"，跟带fencing的分支使用完全一样的字段含义，get_target_status()
+        # 不需要关心结果到底来自哪个分支。
         cur = conn.execute("""
             UPDATE refresh_targets
             SET last_finished_at=?, last_status=?, last_error_category=?, last_detail=?,
-                last_commit_sha=?, last_retry_recommended=?
+                last_commit_sha=?, last_retry_recommended=?, last_result_generation=generation
             WHERE target_key=?
         """, (datetime.now().isoformat(timespec="seconds"), status, error_category, (detail or "")[:500],
               commit_sha, (None if retry_recommended is None else int(bool(retry_recommended))),
@@ -507,27 +541,56 @@ def record_target_result(target_key: str, status: str, detail: str = "",
     return written
 
 
-def get_target_status(target_key: str, cooldown_seconds: int) -> dict:
+def get_target_status(target_key: str, cooldown_seconds: int, lock_stale_seconds: dict = None) -> dict:
     """GET /api/refresh/<target>/status 的数据来源。
 
     state: 'running'（refresh_locks里有一行status=running且triggered_by=
-        这个target自己）/ 'cooldown'（不在running，但还在自己的5分钟冷却
-        窗口内）/ 'idle'（都不是）。
-    last_result: 上一次真正跑完（无论success还是failure）的结果，即使当前
-        state是running也不会被清空——调用方既能看到"现在忙不忙"，也能看到
-        "上次到底成没成功"。
+        这个target自己，且年龄未超过它自己的stale阈值）/ 'stale'（S3修复：
+        同样是那一行status=running，但年龄已经超过lock_stale_seconds里
+        对应lock_key的阈值——holder大概率已经异常终止，不应该再被当作
+        "确实在执行中"展示给用户，即使出于fencing安全性的考虑、这里的
+        只读查询本身并不会去真正回收这一行；真正的回收仍然只在下一次
+        有人acquire这把锁时才发生，见try_acquire_lock()）/ 'cooldown'
+        （不在running/stale，但还在自己的冷却窗口内）/ 'idle'（都不是）。
+        lock_stale_seconds形如{"content_fetch": 420, "git_publish": 300}，
+        留空(None)时不做stale判断，永远只会是running（保持旧行为，供
+        不关心这个区分的调用方使用）。
+
+    last_result_is_current（S6修复）: True——last_result实际写入时对应的
+        generation(refresh_targets.last_result_generation)跟这个target
+        当前的generation一致，last_result确实就是"最近一次尝试"的真实
+        结果；False——generation已经比last_result写入时更新（说明之后
+        至少又发起过一次新的尝试：acquire会让generation前进），但那次
+        更新的尝试从未成功调用record_target_result()写回结果（可能是
+        被busy_git_publish拒绝、进程被杀、后台watcher因worker重启丢失
+        ……），此时last_result展示的实际上是更早一轮的陈旧结果，不能被
+        误当作反映了最近这次尝试；None——从来没有任何一轮真正写完过
+        结果（last_result本身就是None，这个字段不适用）。
+    last_result: 上一次真正写完的结果，无论state是什么、无论
+        last_result_is_current是True还是False，都不会被清空——调用方
+        始终能看到"历史上最近一次的结果"，只是需要结合last_result_is_current
+        自己判断这份结果是否还能代表"最近一次尝试"。
+    last_result.detail（S8修复）: 永远是safe_errors.safe_public_detail()按
+        status/error_category生成的固定模板摘要，不是数据库里last_detail
+        列存的原始文本——这个函数是匿名公开的GET端点，last_detail列本身
+        允许保留原始subprocess stderr/异常文本供运维内部排查，但绝不能
+        经这里透传给调用方。
     """
+    lock_stale_seconds = lock_stale_seconds or {}
     conn = get_conn()
     target_row = conn.execute(
         "SELECT * FROM refresh_targets WHERE target_key = ?", (target_key,)
     ).fetchone()
     running_row = conn.execute(
-        "SELECT lock_key FROM refresh_locks WHERE status='running' AND triggered_by=?", (target_key,)
+        "SELECT lock_key, started_at FROM refresh_locks WHERE status='running' AND triggered_by=?",
+        (target_key,),
     ).fetchone()
     conn.close()
 
     if running_row:
-        state = "running"
+        stale_threshold = lock_stale_seconds.get(running_row["lock_key"])
+        age = (datetime.now() - datetime.fromisoformat(running_row["started_at"])).total_seconds()
+        state = "stale" if (stale_threshold is not None and age > stale_threshold) else "running"
     elif target_row and target_row["last_started_at"]:
         elapsed = (datetime.now() - datetime.fromisoformat(target_row["last_started_at"])).total_seconds()
         state = "cooldown" if elapsed < cooldown_seconds else "idle"
@@ -535,17 +598,27 @@ def get_target_status(target_key: str, cooldown_seconds: int) -> dict:
         state = "idle"
 
     last_result = None
+    last_result_is_current = None
     if target_row and target_row["last_status"]:
         last_result = {
             "status": target_row["last_status"],
             "error_category": target_row["last_error_category"],
-            "detail": target_row["last_detail"],
+            # S8修复：last_detail这一列本身允许保留原始诊断文本（供运维
+            # 通过sqlite3直接排查），但这个GET端点是匿名公开的，对外的
+            # detail永远只能是safe_errors按status/error_category查出的固定
+            # 模板摘要，绝不能把这一列的原始内容直接透传出去。
+            "detail": safe_errors.safe_public_detail(target_row["last_status"],
+                                                       target_row["last_error_category"]),
             "commit": target_row["last_commit_sha"],
             "finished_at": target_row["last_finished_at"],
             "retry_recommended": (None if target_row["last_retry_recommended"] is None
                                    else bool(target_row["last_retry_recommended"])),
         }
-    return {"target": target_key, "state": state, "last_result": last_result}
+        if target_row["last_result_generation"] is not None:
+            last_result_is_current = (target_row["last_result_generation"] == target_row["generation"])
+
+    return {"target": target_key, "state": state,
+            "last_result_is_current": last_result_is_current, "last_result": last_result}
 
 
 def strip_html_for_fts(html: str) -> str:

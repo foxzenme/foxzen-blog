@@ -6,6 +6,17 @@ name: Deploy GitHub Pages
 # 确认整个流程稳定之后，可以再单独加一个 push 触发器。
 on:
   workflow_dispatch:
+    inputs:
+      refresh_id:
+        description: '公开匿名刷新系统用于关联本次dispatch与对应run的唯一标识（S5修复：run-name据此渲染，github_actions.py按run-name精确匹配，不再仅靠时间戳弱关联）。人工在GitHub网页上手动触发时留空即可。'
+        required: false
+        type: string
+        default: ''
+
+# S5修复：run-name在自动化dispatch(带refresh_id)时渲染成"Pages refresh
+# <refresh_id>"，github_actions.py据此精确匹配对应run，不会跟人工手动
+# 触发的run(refresh_id为空，run-name是默认值)混淆。
+run-name: ${{ inputs.refresh_id != '' && format('Pages refresh {0}', inputs.refresh_id) || 'Deploy GitHub Pages' }}
 
 permissions:
   contents: read

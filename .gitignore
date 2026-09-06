@@ -68,8 +68,9 @@ data/blog.db-wal
 *.secret
 *.token
 
-# Pages发布构建产物(由publish_build.py现场生成，不需要进Git)
+# Pages发布构建产物(由publish_build.py/build_status_page.py现场生成，不需要进Git)
 /publish/
+/publish_status/
 
 # 图片（仓库根目录等处的杂项图片不需要进Git）
 *.png

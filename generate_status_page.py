@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 """
-把 data/announcements.txt 渲染成一个自包含的静态HTML状态页，供以后的
-update.foxzen.me 使用（见"发送给 Claude_Code_当前任务.txt"第十四节）。
+把 data/announcements.txt 渲染成一个自包含的静态HTML公告页，即
+update.foxzen.me（"最近发生了什么"——跟status.foxzen.me"现在怎么样"明确
+区分，见build_status_page.py）。这个文件名字里虽然带"status"，但内容和
+用途一直是公告/announcement页，不是本次新增的平台运行状态页，注意区分。
 
 为什么做成独立的静态生成脚本，而不是Flask里的一个路由：
 update.foxzen.me 存在的意义就是"GreenCloud/Flask本身宕机时，读者仍然能看到
 公告"。如果公告页面本身也是这台服务器上Flask动态渲染的，服务器一挂，公告页
-跟着一起挂，起不到状态页该起的作用。所以这里只生成一份不依赖数据库、不依赖
-Flask进程的纯静态HTML，后续可以推到GitHub Pages/Cloudflare Pages（第十六/
-十七节的静态灾备），跟正常博客站点完全解耦。
+跟着一起挂，起不到公告页该起的作用。所以这里只生成一份不依赖数据库、不依赖
+Flask进程的纯静态HTML，可以推到GitHub Pages/Cloudflare Pages（参考
+publish_build.py/build_status_page.py现有的发布约定），跟正常博客站点完全
+解耦。
 
 用法：
     python3 generate_status_page.py
-    （会读 data/announcements.txt，生成 static_status/index.html）
+    （会读 data/announcements.txt，生成 static_status/index.html +
+    static_status/CNAME）
 
 尚未完成、需要人工决定的部分（本次不擅自处理）：
-    - update.foxzen.me 这个子域名的DNS记录、是否接入Cloudflare，需要在
-      Cloudflare控制台手动添加；
-    - static_status/ 目录推送到哪个GitHub仓库/Cloudflare Pages项目，
-      需要你提供仓库地址和授权方式后再实现自动同步（第十六/十七节）；
+    - update.foxzen.me 这个子域名的DNS记录当前已经存在但代理到GreenCloud
+      的IP；如果采用这里的纯静态方案，需要在Cloudflare控制台改成指向
+      GitHub Pages/Cloudflare Pages（本轮不修改DNS）；
+    - static_status/ 目录推送到哪个GitHub仓库/Cloudflare Pages项目、是否
+      需要单独的GitHub Actions workflow，需要你确认后再实现；
     - 本脚本目前需要手动运行；要不要接到fetch_blog.py的cron里自动重新生成，
-      等你确认再做。
+      等你确认再做；
+    - data/announcements.txt 目前没有任何真实公告内容，是否发布第一条
+      公告、写什么，由你决定，这里不代为编造。
 """
 import html
 from datetime import datetime
@@ -30,27 +37,35 @@ BASE_DIR = Path(__file__).parent
 ANNOUNCEMENTS_FILE = BASE_DIR / "data" / "announcements.txt"
 OUTPUT_DIR = BASE_DIR / "static_status"
 OUTPUT_FILE = OUTPUT_DIR / "index.html"
+HOST = "update.foxzen.me"
 
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>狐斋志异 - 站点状态与公告</title>
+<title>狐斋志异 · 站点公告</title>
 <style>
 body {{ font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 640px;
        margin: 40px auto; padding: 0 16px; line-height: 1.6; color: #222; }}
-h1 {{ font-size: 1.4em; }}
+h1 {{ font-size: 1.4em; margin-bottom: 4px; }}
+.subtitle {{ color: #666; font-size: 0.9em; margin-bottom: 8px; }}
+.cross-link {{ margin: 4px 0 24px; font-size: 0.9em; }}
 .entry {{ border-bottom: 1px solid #ddd; padding: 12px 0; }}
 .entry:last-child {{ border-bottom: none; }}
 .time {{ color: #888; font-size: 0.85em; }}
-.type {{ display: inline-block; background: #eee; border-radius: 4px; padding: 1px 8px;
+.type {{ display: inline-block; background: #eee; color: #555; border-radius: 4px; padding: 1px 8px;
         font-size: 0.8em; margin-left: 8px; }}
+.type.type-incident {{ background: #fbe6e6; color: #b3261e; }}
+.type.type-maintenance {{ background: #fff4e0; color: #8a5a00; }}
+.type.type-recovery {{ background: #e3f6e9; color: #1a7f3c; }}
 .empty {{ color: #888; }}
 </style>
 </head>
 <body>
-<h1>狐斋志异 - 站点状态与公告</h1>
+<h1>狐斋志异 · 站点公告</h1>
+<div class="subtitle">update.foxzen.me &mdash; 最近发生了什么 (what's happened recently)</div>
+<p class="cross-link"><a href="https://status.foxzen.me/">View current platform status &rarr;</a></p>
 <p class="empty" style="display:{empty_display}">目前没有公告。</p>
 {entries_html}
 </body>
@@ -58,9 +73,28 @@ h1 {{ font-size: 1.4em; }}
 """
 
 ENTRY_TEMPLATE = """<div class="entry">
-  <span class="time">{time}</span><span class="type">{type}</span>
+  <span class="time">{time}</span><span class="type {type_class}">{type}</span>
   <div>{message}</div>
 </div>"""
+
+# 类型字段是自由文本，不是固定枚举——announcements.txt文件头部的"功能更新/
+# 网站宕机/恢复/维护/重要技术变更"只是举例，不是强制要求站长必须使用这几个
+# 词。这里只做尽力而为的关键词匹配来决定视觉样式，任何匹配不上的文字都安全
+# 退回中性样式（type-notice级别，即不加任何额外class，沿用.type的默认灰色），
+# 不会因为遇到没见过的类型文字就出错或显示误导性的颜色。
+_TYPE_STYLE_RULES = (
+    (("故障", "宕机", "incident", "outage"), "type-incident"),
+    (("维护", "maintenance"), "type-maintenance"),
+    (("恢复", "recovery"), "type-recovery"),
+)
+
+
+def _type_css_class(type_str):
+    lowered = type_str.lower()
+    for keywords, css_class in _TYPE_STYLE_RULES:
+        if any(kw in lowered for kw in keywords):
+            return css_class
+    return ""
 
 
 # 允许的时间格式，按顺序尝试：可以不写秒，但年月日时分必须是合法的公历日期时间。
@@ -114,6 +148,7 @@ def render_html(entries):
         ENTRY_TEMPLATE.format(
             time=html.escape(e["time"]),
             type=html.escape(e["type"]),
+            type_class=_type_css_class(e["type"]),
             message=html.escape(e["message"]),
         )
         for e in entries
@@ -124,12 +159,22 @@ def render_html(entries):
     )
 
 
-def main():
-    text = ANNOUNCEMENTS_FILE.read_text(encoding="utf-8") if ANNOUNCEMENTS_FILE.exists() else ""
+def build_update_page(output_dir: Path = OUTPUT_DIR, announcements_file: Path = ANNOUNCEMENTS_FILE):
+    """解析announcements_file、渲染HTML，连同CNAME一起写入output_dir，
+    返回(output_dir, entries)——entries一并返回给调用方（含main()自己的
+    打印、测试）复用，不需要重新解析一遍文件。
+    """
+    text = announcements_file.read_text(encoding="utf-8") if announcements_file.exists() else ""
     entries = parse_announcements(text)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(render_html(entries), encoding="utf-8")
-    print(f"已生成 {OUTPUT_FILE}，共{len(entries)}条公告。")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "index.html").write_text(render_html(entries), encoding="utf-8")
+    (output_dir / "CNAME").write_text(HOST + "\n", encoding="utf-8")
+    return output_dir, entries
+
+
+def main():
+    output_dir, entries = build_update_page()
+    print(f"已生成 {output_dir / 'index.html'}，共{len(entries)}条公告。")
 
 
 if __name__ == "__main__":

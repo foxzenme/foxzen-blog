@@ -672,6 +672,10 @@ li {{ margin-bottom: 1em; }}
 </div>
 
 <div class="archive-note">
+Internet Archive verification: This page is maintained by the owner of foxzen.me and backup.foxzen.me and is published to verify control of these domains for archival and removal requests.
+</div>
+
+<div class="archive-note">
 如果这些文章对你有帮助，欢迎离线保存。知识的价值不仅在于被阅读，也在于能够长期保存和再次使用。欢迎下载、离线阅读和长期保存。转载或引用请注明来源。
 </div>
 

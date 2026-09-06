@@ -119,6 +119,16 @@ REFRESH_CORS_ALLOWED_ORIGINS = {
     "https://github.foxzen.me", "https://cf.foxzen.me",
 }
 
+# status.foxzen.me（只读状态页，见build_status_page.py）只需要能读取
+# GET-only的/api/health和/api/refresh/<target>/status，用来展示"最近一次
+# 同步状态"，不应该获得触发/api/refresh/<target>这个POST写操作的任何新
+# 能力——加不加CORS都不影响POST本身能不能被调用（匿名公开触发是既有设计，
+# 见下面_apply_refresh_cors的说明），CORS只影响"哪些网页的JS能读到响应
+# 内容"。这里特意用一个单独、更宽的集合，只给两个GET-only端点用，不给
+# POST触发端点用，让"这次改动到底新增了什么"在代码里一眼可辨。
+STATUS_PAGE_ORIGIN = "https://status.foxzen.me"
+STATUS_READ_CORS_ALLOWED_ORIGINS = REFRESH_CORS_ALLOWED_ORIGINS | {STATUS_PAGE_ORIGIN}
+
 
 # ---------------------------------------------------------------------------
 # 页面路由（原来由nginx直接serve，现在经Flask计数后返回）
@@ -629,18 +639,34 @@ def refresh_target_options(target):
 
 @app.after_request
 def _apply_refresh_cors(response):
-    """只对/api/refresh*路径生效，不是全局CORS。四个域名精确匹配、回显
+    """只对/api/refresh*路径和/api/health生效，不是全局CORS。精确匹配
     请求方自己的Origin（不是拼通配符），不允许的origin不加这个响应头——
     浏览器会因此拒绝跨域读取响应内容，等同拒绝。绝不设置
     Access-Control-Allow-Credentials（本来也不需要携带cookie）。
+
+    两档白名单：
+    - /api/refresh/<target>（POST触发本身 + 对应OPTIONS预检）：只允许
+      mirror/backup/github/cf——这四个是唯一会在页面上放"刷新"按钮、
+      需要读取触发结果的站点，范围维持原样不扩大。
+    - /api/refresh/<target>/status（GET查询 + OPTIONS）和/api/health
+      （GET）：额外允许status.foxzen.me——它只读展示这些端点本来就公开
+      的数据，从不调用POST（见test_status_page.py的验证），加这个白名单
+      不代表它获得了任何新的写权限。
     """
-    if request.path.startswith("/api/refresh"):
-        origin = request.headers.get("Origin")
-        if origin in REFRESH_CORS_ALLOWED_ORIGINS:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    path = request.path
+    if path == "/api/health":
+        allowed_origins = STATUS_READ_CORS_ALLOWED_ORIGINS
+    elif path.startswith("/api/refresh"):
+        allowed_origins = STATUS_READ_CORS_ALLOWED_ORIGINS if path.endswith("/status") else REFRESH_CORS_ALLOWED_ORIGINS
+    else:
+        return response
+
+    origin = request.headers.get("Origin")
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
 

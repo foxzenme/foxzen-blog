@@ -14,11 +14,13 @@ cron每小时跑一次。视频不下载，保留原链接并标注"外部链接
 用法: python3 fetch_blog.py
 """
 import hashlib
+import html
 import json
 import os
 import re
 import shutil
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
@@ -47,6 +49,11 @@ MIRROR_ROOT_URL = "https://mirror.foxzen.me"
 INDEXNOW_KEY = "29bfb801721343b798cc9dfca454d8af"
 HTML_DIR = Path(__file__).parent / "html"
 POSTS_DIR = HTML_DIR / "posts"
+# 首页"我最喜欢的博客"数据源，格式跟data/quotes.txt同一个思路：改这个文件就
+# 能改内容，不需要改代码。跟quotes.txt不同的是这里内容是静态的（不需要每次
+# 请求随机选一条），所以直接在fetch_blog.py抓取时渲染进html/index.html，不像
+# quotes.txt那样在app.py里按请求实时替换<!--QUOTE-->占位符。
+FAVORITE_BLOGS_FILE = BASE_DIR / "data" / "favorite_blogs.txt"
 
 IMG_SRC_RE = re.compile(r'<img[^>]+src="([^"]+)"[^>]*>')
 AUDIO_SRC_RE = re.compile(r'<audio[^>]+src="([^"]+)"[^>]*>|<source[^>]+src="([^"]+\.(?:mp3|ogg|wav))"[^>]*>')
@@ -262,12 +269,8 @@ POST_TEMPLATE = """<!DOCTYPE html>
 <style>
 body {{ max-width: 760px; margin: 40px auto; padding: 0 20px;
        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-       font-size: 18px; line-height: 1.9; color: #222; }}
+       font-size: 21px; line-height: 1.9; color: #222; }}
 h1 {{ font-size: 1.6em; }}
-.drop-cap-target::first-letter {{
-  font-size: 2.6em; font-weight: bold; float: left; line-height: 1;
-  margin: 0.05em 0.1em 0 0; color: #333;
-}}
 .meta {{ color: #888; font-size: 0.9em; margin-bottom: 1em; }}
 .tags {{ margin-bottom: 2em; }}
 .tags a {{ display: inline-block; background: #f0f0f0; padding: 2px 10px; border-radius: 10px;
@@ -275,7 +278,7 @@ h1 {{ font-size: 1.6em; }}
 img {{ max-width: 100%; height: auto; }}
 .content pre {{ white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: break-word !important; }}
 audio {{ width: 100%; }}
-a.back {{ display: inline-block; margin-bottom: 2em; color: #06c; text-decoration: none; }}
+a.back {{ display: inline-block; margin-bottom: 0.5em; color: #06c; text-decoration: none; }}
 .content a[href^="http"]:not([href*="mirror.foxzen.me"]) {{
   color: #1a73e8;
 }}
@@ -291,19 +294,220 @@ a.back {{ display: inline-block; margin-bottom: 2em; color: #06c; text-decoratio
 .discuss-btn {{ display: inline-block; padding: 8px 20px; background: #1a73e8; color: #fff;
                 border-radius: 20px; text-decoration: none; font-size: 0.9em; }}
 .discuss-btn:hover {{ background: #1558b0; }}
+/* 阅读体验优化：正文（.content）本身固定用body的1em（约"三号"字），不因为
+   标题/引用/代码/表格各自的相对字号定义而被撑大或压小——下面每条规则只
+   影响.content内部对应的元素类型，不影响.meta/.tags/.stats-note这些页面
+   chrome，避免"整篇文章所有元素都变成同一个font-size"。Blogger真实导出的
+   标题层级不可靠（同一篇文章里h1/h2混用、不同文章里同样的"小节标题"语义
+   却分别用了h1/h2/h3，见render_post()里_inject_heading_anchors()的说明），
+   所以.content里h1~h6统一给同一档视觉样式，不按标签名区分深浅层级——
+   这是本次审计真实文章后采用的"最小、最稳妥"方案，不是遗漏。
+*/
+.content {{ font-size: 1em; }}
+.content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {{
+  font-size: 1.3em; font-weight: 600; line-height: 1.35; margin: 1.3em 0 0.6em;
+}}
+.content blockquote {{
+  font-size: 0.95em; color: #555; font-style: italic;
+  border-left: 3px solid #ddd; margin: 1em 0; padding: 0.2em 1em;
+}}
+.content pre, .content code {{
+  font-size: 0.8em; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}}
+.content ul, .content ol, .content li {{ font-size: 1em; }}
+.content table {{ font-size: 0.85em; border-collapse: collapse; }}
+.content th, .content td {{ border: 1px solid #ddd; padding: 4px 8px; }}
+/* Blogger目前导出的图片没有独立的图注文本（只是<div class="separator">
+   包一个<img>，见本轮审计），这条规则先备好、暂时没有实际可见效果，
+   以后如果文章里出现<figcaption>不需要再补一次。 */
+.content figcaption {{ font-size: 0.8em; color: #888; text-align: center; }}
+.drop-cap {{
+  font-size: 1.65em; font-weight: bold; float: left; line-height: 1;
+  margin: 0.05em 0.1em 0 0; color: #333;
+}}
+/* 右上角固定定位：之前是内联在"返回目录"链接后面的普通文档流元素，
+   本次全站UI国际化明确要求"右上角、桌面/移动端都要容易找到、不遮挡正文"，
+   改成position:fixed后不再占用文档流位置，所以{i18n_block}在HTML里
+   具体插在哪一行不影响视觉位置，只影响屏幕阅读器/tab键的访问顺序
+   （放在"返回"链接之后、正文h1之前，属于合理的导航类元素顺序，不用挪动）。 */
+.lang-toggle {{
+  position: fixed; top: 12px; right: 12px; z-index: 100;
+  display: inline-block; margin: 0; font-size: 0.85em;
+  background: rgba(255,255,255,0.92); padding: 4px 10px; border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}}
+.lang-toggle button {{
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  color: #999; font-size: 1em; font-family: inherit;
+}}
+.lang-toggle button.active {{ color: #1a73e8; font-weight: bold; }}
+@media (max-width: 480px) {{
+  .lang-toggle {{ top: 8px; right: 8px; font-size: 0.75em; padding: 3px 8px; }}
+}}
+.toc {{ background: #f7f7f7; border-radius: 8px; padding: 12px 20px; margin-bottom: 2em; font-size: 0.95em; }}
+.toc-title {{ font-weight: 600; margin-bottom: 6px; }}
+.toc ol {{ margin: 0; padding-left: 1.3em; }}
+.toc li {{ margin: 4px 0; }}
+.toc a {{ color: #1a5fb4; text-decoration: none; }}
+.toc a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
-<a class="back" href="/" onclick="if (history.length > 1) {{ history.back(); return false; }}">&larr; 返回目录</a>
+<a class="back" href="/" data-i18n="back_home" onclick="if (history.length > 1) {{ history.back(); return false; }}">&larr; 返回目录</a>
+{i18n_block}
 <h1>{title}</h1>
-<div class="meta">发布于 {published}</div>
-<div class="meta-precise">最初发布：{published_precise} · 最后修改：{updated_precise} · {reading_stats}</div>
+<div class="meta"><span data-i18n="published">发布于</span> {published}</div>
+<div class="meta-precise"><span data-i18n="first_published">最初发布</span>：{published_precise} · <span data-i18n="last_updated">最后修改</span>：{updated_precise} · <span data-i18n-tpl="reading_stats" data-chars="{reading_char_count}" data-minutes="{reading_minutes}">全文{reading_char_count}字 · 预计阅读{reading_minutes}分钟</span></div>
 <div class="tags">{tags_html}</div>
+{toc_block}
 <div class="content">{content}</div>
 {discuss_cta_block}
-<div class="stats-note">本文镜像页浏览 {click_count} 次 · 离线下载 {download_count} 次 · 已有 {finish_read_count} 人读完</div>
+<div class="stats-note"><span data-i18n-tpl="stats_note" data-views="{click_count}" data-downloads="{download_count}" data-finishes="{finish_read_count}">本文镜像页浏览 {click_count} 次 · 离线下载 {download_count} 次 · 已有 {finish_read_count} 人读完</span></div>
 {finish_read_block}{code_copy_block}{syntax_highlight_block}{new_tab_links_block}</body>
 </html>
+"""
+
+
+# 网站UI中英文切换：只翻译模板自带的界面文字（返回链接、目录标题、发布/
+# 更新时间标签、阅读统计、讨论区提示、复制按钮、完读提示），从来不touch
+# .content——.content里全部是Blogger原文，这个脚本只认data-i18n/
+# data-i18n-tpl这两个属性，.content内部的真实文章HTML永远不会带这两个
+# 属性（这两个属性只出现在POST_TEMPLATE自己写的chrome里，不是Blogger
+# 导出内容的一部分），所以结构上就够不到文章正文，不需要额外写"跳过
+# .content"的排除逻辑。默认语言判断：先看localStorage是否有手动选择过，
+# 没有则退回navigator.languages/navigator.language，语言标签以"zh"开头
+# 判定为中文，否则默认英文；用户手动点过之后固定使用那个选择，跨文章保持
+# （因为都读写同一个localStorage key），不使用cookie/不发任何请求。
+I18N_BLOCK = """<div class="lang-toggle">
+  <button type="button" data-lang-btn="zh" aria-label="切换到中文">中</button> / <button type="button" data-lang-btn="en" aria-label="Switch to English">EN</button>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var TRANSLATIONS = {
+    zh: {
+      back_home: "返回目录",
+      toc_title: "目录",
+      published: "发布于",
+      first_published: "最初发布",
+      last_updated: "最后修改",
+      discuss_prompt: "发现错误、补充建议或有使用经验？欢迎到主站留言讨论。",
+      discuss_btn: "💬 到主站参与讨论",
+      copy_btn: "复制",
+      copy_done: "已复制",
+      finish_toast: "🎉 谢谢你读完了"
+    },
+    en: {
+      back_home: "Back to home",
+      toc_title: "Contents",
+      published: "Published",
+      first_published: "First published",
+      last_updated: "Last updated",
+      discuss_prompt: "Found an error, have feedback, or used this yourself? Feel free to discuss on the main site.",
+      discuss_btn: "💬 Discuss on main site",
+      copy_btn: "Copy",
+      copy_done: "Copied",
+      finish_toast: "🎉 Thanks for reading!"
+    }
+  };
+
+  // 只有这两条包含运行时数字（字数/分钟数、浏览/下载/完读次数），数字本身
+  // 在构建时(fetch_blog.py render_post())已经写进对应元素的data-*属性里，
+  // 这里只负责按当前语言拼句子——句子本身还是固定文案，不是自由翻译。
+  var TEMPLATES = {
+    zh: {
+      reading_stats: function (chars, minutes) { return "全文" + chars + "字 · 预计阅读" + minutes + "分钟"; },
+      stats_note: function (views, downloads, finishes) {
+        return "本文镜像页浏览 " + views + " 次 · 离线下载 " + downloads + " 次 · 已有 " + finishes + " 人读完";
+      }
+    },
+    en: {
+      reading_stats: function (chars, minutes) { return chars + " characters · " + minutes + " min read"; },
+      stats_note: function (views, downloads, finishes) {
+        return "Viewed " + views + " times · Downloaded " + downloads + " times · " + finishes + " people finished reading";
+      }
+    }
+  };
+
+  var STORAGE_KEY = "foxzen_lang";
+
+  function detectDefaultLang() {
+    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+    for (var i = 0; i < langs.length; i++) {
+      if (/^zh/i.test(langs[i])) return "zh";
+    }
+    return "en";
+  }
+
+  function getLang() {
+    try {
+      var saved = localStorage.getItem(STORAGE_KEY);
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    return detectDefaultLang();
+  }
+
+  function applyLang(lang) {
+    var dict = TRANSLATIONS[lang] || TRANSLATIONS.en;
+    var tpl = TEMPLATES[lang] || TEMPLATES.en;
+
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-i18n");
+      if (dict[key] !== undefined) nodes[i].textContent = dict[key];
+    }
+
+    var tplNodes = document.querySelectorAll("[data-i18n-tpl]");
+    for (var j = 0; j < tplNodes.length; j++) {
+      var el = tplNodes[j];
+      var tplKey = el.getAttribute("data-i18n-tpl");
+      var fn = tpl[tplKey];
+      if (typeof fn !== "function") continue;
+      if (tplKey === "reading_stats") {
+        el.textContent = fn(el.getAttribute("data-chars") || "0", el.getAttribute("data-minutes") || "0");
+      } else if (tplKey === "stats_note") {
+        el.textContent = fn(el.getAttribute("data-views") || "0", el.getAttribute("data-downloads") || "0", el.getAttribute("data-finishes") || "0");
+      }
+    }
+
+    document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
+    var btns = document.querySelectorAll("[data-lang-btn]");
+    for (var k = 0; k < btns.length; k++) {
+      if (btns[k].getAttribute("data-lang-btn") === lang) {
+        btns[k].classList.add("active");
+      } else {
+        btns[k].classList.remove("active");
+      }
+    }
+  }
+
+  function setLang(lang) {
+    try { localStorage.setItem(STORAGE_KEY, lang); } catch (e) {}
+    window.__foxzenLang = lang;
+    applyLang(lang);
+  }
+
+  // 暴露给CODE_COPY_BLOCK/FINISH_READ_BLOCK这些独立<script>用，让它们
+  // 动态创建按钮/提示文字时也能拿到当前语言对应的文案——这个脚本块在
+  // POST_TEMPLATE里的位置早于那两个block，执行顺序上能保证调用时
+  // window.__foxzenT已经存在。
+  window.__foxzenLang = getLang();
+  window.__foxzenT = function (key) {
+    var dict = TRANSLATIONS[window.__foxzenLang] || TRANSLATIONS.en;
+    return dict[key] !== undefined ? dict[key] : key;
+  };
+
+  var toggleBtns = document.querySelectorAll("[data-lang-btn]");
+  for (var m = 0; m < toggleBtns.length; m++) {
+    toggleBtns[m].addEventListener("click", function (e) {
+      setLang(e.currentTarget.getAttribute("data-lang-btn"));
+    });
+  }
+
+  applyLang(window.__foxzenLang);
+})();
+</script>
 """
 
 
@@ -372,15 +576,16 @@ CODE_COPY_BLOCK = """<style>
 
     var btn = document.createElement('button');
     btn.className = 'code-copy-btn';
-    btn.textContent = '复制';
+    btn.setAttribute('data-i18n', 'copy_btn');
+    btn.textContent = window.__foxzenT ? window.__foxzenT('copy_btn') : '复制';
     btn.onclick = function () {
       var text = pre.innerText;
 
       function showCopied() {
-        btn.textContent = '已复制';
+        btn.textContent = window.__foxzenT ? window.__foxzenT('copy_done') : '已复制';
         btn.classList.add('copied');
         setTimeout(function () {
-          btn.textContent = '复制';
+          btn.textContent = window.__foxzenT ? window.__foxzenT('copy_btn') : '复制';
           btn.classList.remove('copied');
         }, 1500);
       }
@@ -457,7 +662,7 @@ FINISH_READ_BLOCK = """<!-- FINISH_READ_START -->
     }
     var toast = document.createElement('div');
     toast.className = 'finish-toast';
-    toast.textContent = '🎉 谢谢你读完了';
+    toast.textContent = window.__foxzenT ? window.__foxzenT('finish_toast') : '🎉 谢谢你读完了';
     document.body.appendChild(toast);
     requestAnimationFrame(function () { toast.classList.add('show'); });
     setTimeout(function () {
@@ -472,8 +677,8 @@ FINISH_READ_BLOCK = """<!-- FINISH_READ_START -->
 
 
 DISCUSS_CTA_BLOCK = """<div class="discuss-cta">
-  <p>发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
-  <a class="discuss-btn" href="__SOURCE_URL__" target="_blank" rel="noopener">💬 到主站参与讨论</a>
+  <p data-i18n="discuss_prompt">发现错误、补充建议或有使用经验？欢迎到主站留言讨论。</p>
+  <a class="discuss-btn" href="__SOURCE_URL__" target="_blank" rel="noopener" data-i18n="discuss_btn">💬 到主站参与讨论</a>
 </div>
 """
 
@@ -512,8 +717,11 @@ def _format_ts(iso_str: str) -> str:
         return iso_str  # 解析失败就原样显示，好过什么都不显示
 
 
-def _reading_stats(content_html: str) -> str:
-    """算全文字数（去HTML标签后的纯文本长度）+ 预计阅读时长。
+def _reading_stats(content_html: str) -> dict:
+    """算全文字数（去HTML标签后的纯文本长度）+ 预计阅读时长，返回原始数字
+    而不是拼好的中文句子——数字要同时喂给页面上data-chars/data-minutes
+    属性（供I18N_BLOCK的JS按当前语言重新拼句子）和构建时的中文兜底文案，
+    句子本身的措辞交给render_post()/I18N_BLOCK，这里只算数。
     按每分钟300字算（偏慢的技术阅读速度，不是轻松阅读的400-500字/分钟），
     因为这系列文章信息密度大，用正常阅读速度算出来的时间会显得不真实地短。
     这只是个粗略估算，不是精确值，就当个参考。
@@ -521,7 +729,167 @@ def _reading_stats(content_html: str) -> str:
     text = db.strip_html_for_fts(content_html)
     char_count = len(text)
     minutes = max(1, round(char_count / 300))
-    return f"全文{char_count}字 · 预计阅读{minutes}分钟"
+    return {"char_count": char_count, "minutes": minutes}
+
+
+# ---------------------------------------------------------------------------
+# 阅读体验优化：章节目录 + 首字放大
+#
+# 关键前提（本次审计18篇真实文章后确认，不是假设）：Blogger作者在编辑器里
+# 手动选"标题"格式时，落到导出HTML里的标签完全不稳定——同一篇文章内混用
+# h1/h2，不同文章的"同一级小节标题"分别对应h1、h2、h3，部分明显是从
+# ChatGPT/Claude对话粘贴过来的内容还带着data-section-id/花哨class名这些
+# 粘贴残留。也就是说标签名本身不能可靠地代表标题的层级深浅——所以下面
+# 把.content内出现的h1~h6一律当成同一级的"章节"处理（不建多级嵌套目录），
+# 这是"最小、最稳妥"的方案，不是没做多级支持。
+# ---------------------------------------------------------------------------
+
+_HEADING_RE = re.compile(r'<h([1-6])((?:\s[^>]*)?)>(.*?)</h\1>', re.DOTALL | re.IGNORECASE)
+_TAG_STRIP_RE = re.compile(r'<[^>]+>')
+_NBSP_ENTITY_RE = re.compile(r'&nbsp;', re.IGNORECASE)
+
+
+def _strip_tags_and_entities(html_fragment: str) -> str:
+    """从一段HTML片段里提取纯文本：去标签、把&nbsp;当空格处理、解码常见
+    HTML实体、合并多余空白。只用于生成目录里显示的标题文字/锚点slug，
+    不用于任何要保留原始HTML的场景。
+    """
+    text = _TAG_STRIP_RE.sub("", html_fragment)
+    text = _NBSP_ENTITY_RE.sub(" ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _slugify_heading(text: str) -> str:
+    """把标题纯文本转成一个能放进id/href片段的锚点字符串。保留中文字符
+    本身——Python的\\w在Unicode模式下已经把中文当"单词字符"处理（不需要
+    额外的字符范围），现代浏览器对UTF-8的id/URL片段也没有问题，没必要转
+    成拼音或者干脆删掉中文，那样反而让锚点变得不可读。其余字符（标点、
+    空白）统一换成连字符。
+    """
+    slug = re.sub(r"[^\w]+", "-", text).strip("-")
+    return slug or "section"
+
+
+def _inject_heading_anchors(content_html: str) -> tuple:
+    """给content_html里每一个h1~h6标签加上稳定的id属性，同时收集
+    [{"id":..., "text":...}, ...]供渲染目录用。
+
+    id生成规则：按标题纯文本slugify；同一篇文章内如果两个标题slug相同
+    （标题文字完全一样，或者去掉标点空白后一样），后出现的依次加
+    -2/-3/...后缀，保证同一篇文章内id绝不重复。
+
+    用正则而不是完整HTML parser处理，是为了保证除了"在h标签上加一个id
+    属性"之外，其余字节不受任何影响——跟publish_build.py里
+    _TITLE_TAG_PATTERN/_H1_TAG_PATTERN的取舍是同一个考虑（见其注释）。
+    标题标签本身不会互相嵌套，(.*?)+反向引用\\1的写法足够安全。
+    """
+    used_slugs = {}
+    headings = []
+
+    def _replace(m):
+        level, attrs, inner = m.group(1), m.group(2), m.group(3)
+        text = _strip_tags_and_entities(inner)
+        if not text:
+            return m.group(0)  # 空标题（比如粘贴产生的空<h2></h2>）不生成锚点，原样保留
+        slug = _slugify_heading(text)
+        seen_count = used_slugs.get(slug, 0)
+        used_slugs[slug] = seen_count + 1
+        anchor_id = slug if seen_count == 0 else f"{slug}-{seen_count + 1}"
+        headings.append({"id": anchor_id, "text": text, "level": level})
+        return f'<h{level}{attrs} id="{anchor_id}">{inner}</h{level}>'
+
+    new_html = _HEADING_RE.sub(_replace, content_html)
+    return new_html, headings
+
+
+def render_toc_html(headings: list) -> str:
+    """少于2个章节时不生成目录——只有1个（或0个）小标题时，目录本身没有
+    导航价值，徒增页面元素。目录标题(“目录”)本身也走data-i18n，跟随
+    UI语言切换；但列表里的标题文字必须是原文，永远不翻译（见_HEADING_RE
+    收集到的text本来就是Blogger原文，这里只是原样引用，不做任何改写）。
+    """
+    if len(headings) < 2:
+        return ""
+    items = "\n".join(
+        f'    <li><a href="#{h["id"]}">{html.escape(h["text"])}</a></li>'
+        for h in headings
+    )
+    return f'''<nav class="toc" aria-label="Table of contents">
+  <div class="toc-title" data-i18n="toc_title">目录</div>
+  <ol>
+{items}
+  </ol>
+</nav>
+'''
+
+
+# 首字放大：不用CSS ::first-letter（对"第一个真实字符可能嵌套在深层子
+# 元素里"这种情况不可靠，见下面_first_visible_char_span的说明），而是先
+# 在Python这边精确定位"第一个会被访客看到的字符"在原始字符串里的位置，
+# 直接用一个只包一个字符的<span>包起来，样式套在这个span上——不依赖CSS
+# 引擎自己去猜"块级容器的第一行第一个字母"，结果100%可预测。
+_SKIP_TAG_NAMES = {"pre", "code", "script", "style", "h1", "h2", "h3", "h4", "h5", "h6"}
+_TAG_RE = re.compile(r"<[^>]+>")
+_TAG_NAME_RE = re.compile(r"</?\s*([a-zA-Z0-9]+)")
+
+
+def _first_visible_char_span(content_html: str):
+    """在content_html的原始字符串里找到"第一个真正会被访客看到的字符"的
+    [start, end)区间。跳过：标签本身、纯空白、&nbsp;实体、以及<pre>/
+    <code>（代码块的第一个字符不适合当"文章第一个字"）和<h1>~<h6>（如果
+    文章一上来就是一个标题，跳过它、找它之后第一段正文的第一个字，而不是
+    把标题的第一个字放大——标题本身已经有自己的加粗/加大样式）内部的文本。
+    找不到（比如整篇文章只有图片、空段落）时返回None，调用方原样跳过，
+    不强行处理。
+    """
+    skip_depth = 0
+
+    def _first_real_char_index(segment: str):
+        i, n = 0, len(segment)
+        while i < n:
+            if segment[i].isspace():
+                i += 1
+                continue
+            m = _NBSP_ENTITY_RE.match(segment, i)
+            if m:
+                i = m.end()
+                continue
+            return i
+        return None
+
+    tag_spans = [(m.start(), m.end(), m.group(0)) for m in _TAG_RE.finditer(content_html)]
+    tag_spans.append((len(content_html), len(content_html), ""))  # 哨兵：处理最后一个标签之后的剩余文本
+
+    pos = 0
+    for tag_start, tag_end, tag_text in tag_spans:
+        segment = content_html[pos:tag_start]
+        if skip_depth == 0 and segment:
+            idx = _first_real_char_index(segment)
+            if idx is not None:
+                return (pos + idx, pos + idx + 1)
+        if tag_text:
+            name_match = _TAG_NAME_RE.match(tag_text)
+            tag_name = name_match.group(1).lower() if name_match else ""
+            if tag_name in _SKIP_TAG_NAMES:
+                if tag_text.startswith("</"):
+                    skip_depth = max(0, skip_depth - 1)
+                elif not tag_text.rstrip().endswith("/>"):
+                    skip_depth += 1
+        pos = tag_end
+    return None
+
+
+def _apply_drop_cap(content_html: str) -> str:
+    """把_first_visible_char_span()定位到的那一个字符包进
+    <span class="drop-cap">。找不到目标时原样返回，不报错、不强行处理
+    ——比如整篇正文只有图片/空段落这种极端情况。
+    """
+    span = _first_visible_char_span(content_html)
+    if span is None:
+        return content_html
+    start, end = span
+    return content_html[:start] + '<span class="drop-cap">' + content_html[start:end] + "</span>" + content_html[end:]
 
 
 def canonical_static_target(canonical_path):
@@ -561,6 +929,14 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
                  canonical_path=None):
     tags_html = "".join(f'<a href="/index.html?tag={t}">#{t}</a>' for t in tags)
 
+    # 阅读体验优化：字数/阅读时长统计必须用原始content_html算——下面
+    # 加锚点/首字span这两步只增加属性/包一层<span>，不产生新的可见文本，
+    # 但用原文算更直接、不用依赖"这两步不影响字数"这个隐含假设。
+    stats = _reading_stats(content_html)
+    enhanced_content, headings = _inject_heading_anchors(content_html)
+    enhanced_content = _apply_drop_cap(enhanced_content)
+    toc_block = render_toc_html(headings)
+
     # canonical标签：不管这篇文章最终通过mirror/backup/github/cf哪个域名被
     # 访问到，都固定指向mirror.foxzen.me——四个域名serve的是同一份html/源
     # 文件（github/cf发布时shutil.copytree原样拷贝，publish_build.py的
@@ -574,19 +950,19 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
     canonical_url = (f"{MIRROR_ROOT_URL}/{canonical_path}.html" if canonical_path
                       else f"{MIRROR_ROOT_URL}/posts/{post_id}/")
 
-    html = POST_TEMPLATE.format(
-        title=title, published=published, tags_html=tags_html, content=content_html,
+    rendered_html = POST_TEMPLATE.format(
+        title=title, published=published, tags_html=tags_html, content=enhanced_content,
         click_count=click_count, download_count=download_count,
         published_precise=_format_ts(published_ts), updated_precise=_format_ts(updated_ts),
         finish_read_count=finish_read_count, finish_read_block=_finish_read_block(post_id),
         code_copy_block=CODE_COPY_BLOCK, discuss_cta_block=_discuss_cta_block(source_url),
-        new_tab_links_block=NEW_TAB_LINKS_BLOCK,
-        reading_stats=_reading_stats(content_html), syntax_highlight_block=SYNTAX_HIGHLIGHT_BLOCK,
-        canonical_url=canonical_url,
+        new_tab_links_block=NEW_TAB_LINKS_BLOCK, i18n_block=I18N_BLOCK, toc_block=toc_block,
+        reading_char_count=stats["char_count"], reading_minutes=stats["minutes"],
+        syntax_highlight_block=SYNTAX_HIGHLIGHT_BLOCK, canonical_url=canonical_url,
     )
     post_dir = POSTS_DIR / post_id
     post_dir.mkdir(parents=True, exist_ok=True)
-    (post_dir / "index.html").write_text(html, encoding="utf-8")
+    (post_dir / "index.html").write_text(rendered_html, encoding="utf-8")
 
     static_target = canonical_static_target(canonical_path)
     if static_target is None:
@@ -594,7 +970,7 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
             print(f"  [警告] canonical_path格式不对，跳过静态化: {canonical_path!r}")
     else:
         static_target.parent.mkdir(parents=True, exist_ok=True)
-        static_target.write_text(html, encoding="utf-8")
+        static_target.write_text(rendered_html, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -889,92 +1265,162 @@ li {{ margin-bottom: 1em; }}
 .entries-box .entry-domain {{ color: #888; font-size: 0.85em; }}
 .entries-box .entry-desc {{ color: #666; font-size: 0.85em; margin-top: 2px; }}
 .entries-box .entry-planned {{ color: #aaa; }}
+/* 全站UI国际化：右上角固定语言切换按钮，跟fetch_blog.py::POST_TEMPLATE
+   里文章页的.lang-toggle保持完全一致的视觉规范（class名/按钮结构/固定
+   定位方式），两边分别独立实现JS部分（首页是static/index.js或
+   static_pages/pages-index.js，取决于host），但样式统一，不会出现
+   "同一个网站不同页面语言按钮长得不一样"。 */
+.lang-toggle {{
+  position: fixed; top: 12px; right: 12px; z-index: 100;
+  display: inline-block; margin: 0; font-size: 0.85em;
+  background: rgba(255,255,255,0.92); padding: 4px 10px; border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}}
+.lang-toggle button {{
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  color: #999; font-size: 1em; font-family: inherit;
+}}
+.lang-toggle button.active {{ color: #1a73e8; font-weight: bold; }}
+@media (max-width: 480px) {{
+  .lang-toggle {{ top: 8px; right: 8px; font-size: 0.75em; padding: 3px 8px; }}
+}}
 </style>
 </head>
 <body>
+<div class="lang-toggle">
+  <button type="button" data-lang-btn="zh" aria-label="切换到中文">中</button> / <button type="button" data-lang-btn="en" aria-label="Switch to English">EN</button>
+</div>
 <img class="header-img" src="images/fox-header.png" alt="狐斋志异" onerror="this.style.display='none'">
 <h1>狐斋志异 - 镜像站</h1>
-<p>本站为 <a href="{blog_root_url}" target="_blank" rel="noopener">主站</a> 的静态镜像，内容定期同步。</p>
+<p><span data-i18n="home_mirror_intro_prefix">本站为 </span><a href="{blog_root_url}" target="_blank" rel="noopener" data-i18n="home_mirror_intro_link">主站</a><span data-i18n="home_mirror_intro_suffix"> 的静态镜像，内容定期同步。</span></p>
 <p class="daily-quote">🦊 <!--QUOTE--></p>
 
 <div class="entries-box">
-<h3>🔗 FoxZen 的其他入口</h3>
-<p class="entries-intro">FoxZen 还提供以下公开入口，分别承担不同用途；全部完全免费开放，不涉及付费、会员或管理员特权。</p>
+<h3 data-i18n="entries_heading">🔗 FoxZen 的其他入口</h3>
+<p class="entries-intro" data-i18n="entries_intro">FoxZen 还提供以下公开入口，分别承担不同用途；全部完全免费开放，不涉及付费、会员或管理员特权。</p>
 <ul>
 <li>
-<span class="entry-name">当前镜像 / 主要文章入口</span><br>
+<span class="entry-name" data-i18n="entry_mirror_name">当前镜像 / 主要文章入口</span><br>
 <span class="entry-domain">mirror.foxzen.me（当前页面）</span>
-<div class="entry-desc">你正在访问的镜像站，同步自主站内容。</div>
+<div class="entry-desc" data-i18n="entry_mirror_desc">你正在访问的镜像站，同步自主站内容。</div>
 </li>
 <li>
-<a class="entry-name" href="https://foxzen.me/" target="_blank" rel="noopener">正式主站</a><br>
+<a class="entry-name" href="https://foxzen.me/" target="_blank" rel="noopener" data-i18n="entry_main_name">正式主站</a><br>
 <span class="entry-domain">foxzen.me</span>
-<div class="entry-desc">FoxZen 的正式主站。</div>
+<div class="entry-desc" data-i18n="entry_main_desc">FoxZen 的正式主站。</div>
 </li>
 <li>
-<a class="entry-name" href="https://backup.foxzen.me/" target="_blank" rel="noopener">源站备用入口</a><br>
+<a class="entry-name" href="https://backup.foxzen.me/" target="_blank" rel="noopener" data-i18n="entry_backup_name">源站备用入口</a><br>
 <span class="entry-domain">backup.foxzen.me</span>
-<div class="entry-desc">绕开 Cloudflare 直连 VPS 源站，主站/Cloudflare 访问异常时可以用这个地址确认源站本身是否正常。</div>
+<div class="entry-desc" data-i18n="entry_backup_desc">绕开 Cloudflare 直连 VPS 源站，主站/Cloudflare 访问异常时可以用这个地址确认源站本身是否正常。</div>
 </li>
 <li>
-<span class="entry-name entry-planned">网站状态与公告（规划中，尚未上线）</span><br>
+<span class="entry-name entry-planned" data-i18n="entry_update_name">网站状态与公告（规划中，尚未上线）</span><br>
 <span class="entry-domain entry-planned">update.foxzen.me</span>
-<div class="entry-desc">用于发布维护、故障、恢复等系统级公告（不是文章更新记录），暂未正式部署。</div>
+<div class="entry-desc" data-i18n="entry_update_desc">用于发布维护、故障、恢复等系统级公告（不是文章更新记录），暂未正式部署。</div>
 </li>
 <li>
-<span class="entry-name entry-planned">GitHub 静态镜像（规划中，尚未上线）</span><br>
+<span class="entry-name entry-planned" data-i18n="entry_github_name">GitHub 静态镜像（规划中，尚未上线）</span><br>
 <span class="entry-domain entry-planned">github.foxzen.me</span>
-<div class="entry-desc">基于 GitHub Pages 的独立静态文章镜像，不依赖 VPS，暂未正式部署。</div>
+<div class="entry-desc" data-i18n="entry_github_desc">基于 GitHub Pages 的独立静态文章镜像，不依赖 VPS，暂未正式部署。</div>
 </li>
 <li>
-<span class="entry-name entry-planned">Cloudflare 静态镜像（规划中，尚未上线）</span><br>
+<span class="entry-name entry-planned" data-i18n="entry_cf_name">Cloudflare 静态镜像（规划中，尚未上线）</span><br>
 <span class="entry-domain entry-planned">cf.foxzen.me</span>
-<div class="entry-desc">基于 Cloudflare Pages 的第二个独立静态发布入口，暂未正式部署。</div>
+<div class="entry-desc" data-i18n="entry_cf_desc">基于 Cloudflare Pages 的第二个独立静态发布入口，暂未正式部署。</div>
 </li>
 </ul>
 </div>
 
+{favorite_blogs_html}
 <div class="archive-note">
 Internet Archive verification: This page is maintained by the owner of foxzen.me and backup.foxzen.me and is published to verify control of these domains for archival and removal requests.
 </div>
 
-<div class="archive-note">
-如果这些文章对你有帮助，欢迎离线保存。知识的价值不仅在于被阅读，也在于能够长期保存和再次使用。欢迎下载、离线阅读和长期保存。转载或引用请注明来源。
-</div>
+<div class="archive-note" data-i18n="archive_note_download">如果这些文章对你有帮助，欢迎离线保存。知识的价值不仅在于被阅读，也在于能够长期保存和再次使用。欢迎下载、离线阅读和长期保存。转载或引用请注明来源。</div>
+
+<div class="archive-note"><span data-i18n="contact_email_prefix">联系邮箱：</span><a href="mailto:foxzenme@gmail.com">foxzenme@gmail.com</a><span data-i18n="contact_note_prefix">（注意：</span><b data-i18n="contact_note_bold">foxzen@gmail.com 不是我</b><span data-i18n="contact_note_suffix">，请勿误认）</span></div>
 
 <div class="archive-note">
-联系邮箱：<a href="mailto:foxzenme@gmail.com">foxzenme@gmail.com</a>（注意：<b>foxzen@gmail.com 不是我</b>，请勿误认）
-</div>
-
-<div class="archive-note">
-狐斋志异不接受商业付费推荐，也不会因为收取费用而推荐某个产品或服务。<br>
-本站推荐的产品、服务和工具，原则上都是我自己使用过，并认为确实值得推荐的。<br>
-如果你是一名预算非常有限的独立开发者，确实需要一些推广，但无力承担商业广告费用，欢迎<a href="mailto:foxzenme@gmail.com">直接联系我</a>。我可以在实际试用你的产品后，根据自己的真实体验决定是否推荐。<br>
-推荐不能购买，赞助也不会获得推荐权限。<br>
-我最终推荐与否，只取决于产品本身是否值得让读者知道。
+<span data-i18n="policy_no_paid_promo">狐斋志异不接受商业付费推荐，也不会因为收取费用而推荐某个产品或服务。</span><br>
+<span data-i18n="policy_genuine_use">本站推荐的产品、服务和工具，原则上都是我自己使用过，并认为确实值得推荐的。</span><br>
+<span data-i18n="policy_contact_prefix">如果你是一名预算非常有限的独立开发者，确实需要一些推广，但无力承担商业广告费用，欢迎</span><a href="mailto:foxzenme@gmail.com" data-i18n="policy_contact_link">直接联系我</a><span data-i18n="policy_contact_suffix">。我可以在实际试用你的产品后，根据自己的真实体验决定是否推荐。</span><br>
+<span data-i18n="policy_no_buy">推荐不能购买，赞助也不会获得推荐权限。</span><br>
+<span data-i18n="policy_final_say">我最终推荐与否，只取决于产品本身是否值得让读者知道。</span>
 </div>
 
 <div class="stats-box">
-<b>文章总数</b>：{post_count} 篇 &nbsp;|&nbsp;
-<b>全站打包下载</b>：{site_download_count} 次 &nbsp;|&nbsp;
-<b>全部导出预估体积</b>：约 {total_export_size}（未压缩，实际zip会更小）<br>
-<b>访问量</b>：今日 {visits_today} · 本周 {visits_week} · 本月 {visits_month} · 今年 {visits_year} · 累计 {visits_total}
+<b data-i18n="stats_post_count_label">文章总数</b>：<span data-i18n-tpl="stats_post_count_value" data-count="{post_count}">{post_count} 篇</span> &nbsp;|&nbsp;
+<b data-i18n="stats_download_count_label">全站打包下载</b>：<span data-i18n-tpl="stats_download_count_value" data-count="{site_download_count}">{site_download_count} 次</span> &nbsp;|&nbsp;
+<b data-i18n="stats_export_size_label">全部导出预估体积</b>：<span data-i18n-tpl="stats_export_size_value" data-size="{total_export_size}">约 {total_export_size}（未压缩，实际zip会更小）</span><br>
+<b data-i18n="stats_visits_label">访问量</b>：<span data-i18n-tpl="stats_visits_value" data-today="{visits_today}" data-week="{visits_week}" data-month="{visits_month}" data-year="{visits_year}" data-total="{visits_total}">今日 {visits_today} · 本周 {visits_week} · 本月 {visits_month} · 今年 {visits_year} · 累计 {visits_total}</span>
 </div>
 
 <div class="leaderboard">
-<h3>🔥 点击排行榜</h3>
+<h3 data-i18n="leaderboard_top_clicked">🔥 点击排行榜</h3>
 <ol>{top_clicked_html}</ol>
-<h3>📥 下载排行榜</h3>
+<h3 data-i18n="leaderboard_top_downloaded">📥 下载排行榜</h3>
 <ol>{top_downloaded_html}</ol>
 </div>
 
 <div id="app"></div>
 <script src="/static/index.js"></script>
-<div class="updated">最后更新: {updated}</div>
-<div class="easter-egg">🦊 <a href="/404/">这个网站藏着一只找不到路的狐狸</a></div>
+<div class="updated"><span data-i18n="footer_updated_label">最后更新</span>: {updated}</div>
+<div class="easter-egg">🦊 <a href="/404/" data-i18n="easter_egg_link">这个网站藏着一只找不到路的狐狸</a></div>
 </body>
 </html>
 """
+
+
+def _parse_favorite_blogs(text: str) -> list:
+    """解析data/favorite_blogs.txt，格式跟announcements.txt同一个思路：跳过
+    注释/空行/分段数不对的行，一行解析失败不影响其它行，返回[{"name","url"},...]。
+
+    只接受HTTPS链接（不接受http/javascript:等其它scheme），这里用
+    urllib.parse.urlparse()判断scheme+netloc是否合法，不用正则手写URL校验——
+    标准库已经处理好了各种边界情况，没有理由自己重新实现一遍。
+    """
+    entries = []
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|", 1)
+        if len(parts) != 2:
+            print(f"  [警告] favorite_blogs.txt 第{lineno}行格式不对（应为 名称|URL），已跳过: {line!r}")
+            continue
+        name, url = (p.strip() for p in parts)
+        if not name or not url:
+            print(f"  [警告] favorite_blogs.txt 第{lineno}行名称或URL为空，已跳过: {line!r}")
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            print(f"  [警告] favorite_blogs.txt 第{lineno}行不是合法的HTTPS地址，已跳过: {url!r}")
+            continue
+        entries.append({"name": name, "url": url})
+    return entries
+
+
+def _render_favorite_blogs_html(entries: list) -> str:
+    """一条都没有（文件不存在/全部被跳过）时返回空字符串，整个区块不显示——
+    跟render_toc_html()"少于2个标题就不渲染TOC"同一个思路，不展示一个空标题
+    的区块。标题上的data-i18n="fav_blogs_heading"由static/index.js里跟
+    foxzen_lang一致的检测逻辑在客户端替换成中/英文，正文里的名称/URL本身
+    永远不翻译（不是UI文案，是博客自己的名字）。
+    """
+    if not entries:
+        return ""
+    items = "\n".join(
+        f'<li><a href="{html.escape(e["url"])}" target="_blank" rel="noopener noreferrer">'
+        f'{html.escape(e["name"])}</a></li>'
+        for e in entries
+    )
+    return f"""<div class="entries-box">
+<h3 data-i18n="fav_blogs_heading">🔗 我最喜欢的博客</h3>
+<ul>
+{items}
+</ul>
+</div>"""
 
 
 def _human_size(num_bytes: int) -> str:
@@ -1010,8 +1456,10 @@ def render_index():
         size = _human_size(export_sizes.get(p["post_id"], 0))
         fallback_lines.append(
             f'<li><a href="{href}" target="_blank" rel="noopener">{p["title"]}</a> '
-            f'<span class="date">{p["published"]}</span> '
-            f'<span class="count">· 浏览{c}次 · 下载{d}次 · 离线版{size} · 完读{f}次</span></li>'
+            f'<span class="date">{p["published"]}</span>'
+            f'<span class="count" data-i18n-tpl="post_stats" data-views="{c}" data-downloads="{d}" '
+            f'data-size="{html.escape(size)}" data-finishes="{f}">'
+            f' · 浏览{c}次 · 下载{d}次 · 离线版{size} · 完读{f}次</span></li>'
         )
     fallback_items = "\n".join(fallback_lines)
 
@@ -1020,28 +1468,48 @@ def render_index():
     canonical_by_id = {p["post_id"]: p.get("canonical_path") for p in posts}
     number_by_id = {p["post_id"]: p["number"] for p in posts}
 
-    def rank_html(rows, unit):
+    def rank_html(rows, unit, tpl_key):
+        # unit是构建时(无JS环境时)的中文兜底文案；tpl_key供客户端i18n脚本
+        # 按当前语言重新拼"（N 次浏览/N views）"这部分，规则和文章页
+        # I18N_BLOCK的reading_stats/stats_note（data-i18n-tpl+data-*属性
+        # 携带原始数字）完全一致。文章标题(r["title"])永远不套用任何
+        # data-i18n/data-i18n-tpl，跟其它地方一样绝不翻译。
+        if not rows:
+            return '<li data-i18n="rank_no_data">暂无数据</li>'
         items = []
         for r in rows:
             href = _href_for(r["post_id"], number_by_id.get(r["post_id"]), canonical_by_id.get(r["post_id"]))
-            items.append(f'<li><a href="{href}" target="_blank" rel="noopener">{r["title"]}</a>（{r["count"]} {unit}）</li>')
-        return "\n".join(items) if items else "<li>暂无数据</li>"
+            items.append(
+                f'<li><a href="{href}" target="_blank" rel="noopener">{r["title"]}</a>'
+                f'<span data-i18n-tpl="{tpl_key}" data-count="{r["count"]}">（{r["count"]} {unit}）</span></li>'
+            )
+        return "\n".join(items)
 
     visits = db.get_visit_stats()
 
-    html = INDEX_TEMPLATE.format(
+    favorite_blogs_text = FAVORITE_BLOGS_FILE.read_text(encoding="utf-8") if FAVORITE_BLOGS_FILE.exists() else ""
+    favorite_blogs_html = _render_favorite_blogs_html(_parse_favorite_blogs(favorite_blogs_text))
+
+    # 变量名特意不叫html——本函数内部(上面fallback_lines循环里)会调用
+    # html.escape()(标准库模块，文件头部import html)，如果这里再用html这个
+    # 名字接INDEX_TEMPLATE.format()的结果，Python会把html当成整个函数作用域
+    # 内的局部变量，导致前面那个html.escape()调用在赋值之前先被引用，抛
+    # UnboundLocalError（本次全站UI国际化给data-i18n-tpl的size属性加转义时
+    # 实测踩到过这个坑，用改名彻底避免，而不是调整调用顺序）。
+    page_html = INDEX_TEMPLATE.format(
         updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         post_count=len(posts),
         site_download_count=db.get_site_download_count(),
         visits_today=visits["today"], visits_week=visits["week"],
         visits_month=visits["month"], visits_year=visits["year"], visits_total=visits["total"],
-        top_clicked_html=rank_html(top_clicked, "次浏览"),
-        top_downloaded_html=rank_html(top_downloaded, "次下载"),
+        top_clicked_html=rank_html(top_clicked, "次浏览", "rank_views"),
+        top_downloaded_html=rank_html(top_downloaded, "次下载", "rank_downloads"),
         blog_root_url=BLOG_ROOT_URL,
         total_export_size=_human_size(db.get_total_export_size()),
+        favorite_blogs_html=favorite_blogs_html,
     )
-    html = html.replace('<div id="app"></div>', f'<div id="app"><ul id="fallback-list">{fallback_items}</ul></div>')
-    (HTML_DIR / "index.html").write_text(html, encoding="utf-8")
+    page_html = page_html.replace('<div id="app"></div>', f'<div id="app"><ul id="fallback-list">{fallback_items}</ul></div>')
+    (HTML_DIR / "index.html").write_text(page_html, encoding="utf-8")
 
 
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")

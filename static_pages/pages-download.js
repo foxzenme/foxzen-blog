@@ -28,6 +28,47 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  // 全站UI国际化：这里只需要alert()/confirm()/title这几处没有常驻DOM节点、
+  // 没法挂data-i18n的提示文案，每次用到都现读localStorage["foxzen_lang"]，
+  // 不缓存成模块级变量——跟static_pages/pages-refresh.js是同一个思路，
+  // 第五份独立实现（跟I18N_BLOCK/static/index.js/pages-index.js/
+  // pages-refresh.js并列），不引入跟其它文件的运行时依赖。按钮本身的文字
+  // 由pages-index.js::applyPagesI18n()的data-i18n sweep负责（这些按钮的
+  // data-i18n属性由publish_build.py::DOWNLOAD_TOOLBAR_HTML烘焙），这里
+  // 不重复处理。
+  var DOWNLOAD_STRINGS = {
+    zh: {
+      missing_files: function (names) { return "以下文章的部分文件抓取失败，已跳过（其余内容仍会打包）：\n" + names; },
+      confirm_export_all: "全站导出离线版可能体积较大，确认继续？",
+      need_tag: "请先在标签框输入要导出的标签",
+      unsupported_browser_title: "当前浏览器不支持此功能",
+      select_one_post: "请先勾选至少一篇文章",
+    },
+    en: {
+      missing_files: function (names) { return "Some files for the following posts failed to fetch and were skipped (the rest will still be packaged):\n" + names; },
+      confirm_export_all: "Exporting the entire site offline may produce a large file. Continue?",
+      need_tag: "Please enter a tag in the tag box first",
+      unsupported_browser_title: "Your browser doesn't support this feature",
+      select_one_post: "Please select at least one post first",
+    },
+  };
+
+  function getFoxzenLang() {
+    try {
+      var saved = localStorage.getItem("foxzen_lang");
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+    for (var i = 0; i < langs.length; i++) {
+      if (/^zh/i.test(langs[i])) return "zh";
+    }
+    return "en";
+  }
+
+  function downloadT() {
+    return DOWNLOAD_STRINGS[getFoxzenLang()] || DOWNLOAD_STRINGS.en;
+  }
+
   function safeTagFilename(tag) {
     var name = String(tag).replace(/[\\/:*?"<>|]/g, "_").trim();
     name = name.replace(/\s+/g, " ");
@@ -150,7 +191,7 @@
 
   function reportMissing(missing) {
     if (missing.length) {
-      alert("以下文章的部分文件抓取失败，已跳过（其余内容仍会打包）：\n" + missing.join(", "));
+      alert(downloadT().missing_files(missing.join(", ")));
     }
   }
 
@@ -167,7 +208,7 @@
     var exportAllBtn = document.querySelector('[data-role="export-all-btn"]');
     if (exportAllBtn) {
       exportAllBtn.onclick = function () {
-        if (!confirm("全站导出离线版可能体积较大，确认继续？")) return;
+        if (!confirm(downloadT().confirm_export_all)) return;
         window.location.href = "/downloads/export-all.zip";
       };
     }
@@ -177,7 +218,7 @@
       exportTagBtn.onclick = function () {
         var tagInput = document.querySelector('[data-role="tag"]');
         var tag = tagInput ? tagInput.value.trim() : "";
-        if (!tag) { alert("请先在标签框输入要导出的标签"); return; }
+        if (!tag) { alert(downloadT().need_tag); return; }
         window.location.href = "/downloads/export-tag/" + encodeURIComponent(safeTagFilename(tag)) + ".zip";
       };
     }
@@ -192,7 +233,7 @@
       // 让用户点了没反应；全站/全部/按标签三个固定入口不受影响，仍然可用。
       selectedButtons.forEach(function (btn) {
         btn.disabled = true;
-        btn.title = "当前浏览器不支持此功能";
+        btn.title = downloadT().unsupported_browser_title;
       });
       return;
     }
@@ -206,7 +247,7 @@
         if (downloadSelectedBtn) {
           downloadSelectedBtn.onclick = async function () {
             var ids = getSelectedPostIds();
-            if (!ids.length) { alert("请先勾选至少一篇文章"); return; }
+            if (!ids.length) { alert(downloadT().select_one_post); return; }
             var result = await buildRawZip(ids, articlesById);
             reportMissing(result.missing);
             var blob = await result.zip.generateAsync({ type: "blob" });
@@ -218,7 +259,7 @@
         if (exportSelectedBtn) {
           exportSelectedBtn.onclick = async function () {
             var ids = getSelectedPostIds();
-            if (!ids.length) { alert("请先勾选至少一篇文章"); return; }
+            if (!ids.length) { alert(downloadT().select_one_post); return; }
             var result = await buildStandaloneZip(ids, articlesById);
             reportMissing(result.missing);
             var blob = await result.zip.generateAsync({ type: "blob" });

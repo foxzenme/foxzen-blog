@@ -74,17 +74,20 @@ DOWNLOAD_JS_SCRIPT_TAG = '<script src="/pages-download.js"></script>'
 REFRESH_JS_SCRIPT_TAG = '<script src="/pages-refresh.js"></script>'
 
 # 插入到#app容器之前的纯静态搜索工具栏。data-role属性是pages-index.js
-# 读取表单值用的钩子，不涉及任何/api/*请求。
+# 读取表单值用的钩子，不涉及任何/api/*请求。data-i18n/data-i18n-placeholder
+# 属性是本次全站UI国际化新增的钩子，跟mirror首页static/index.js用的是同一套
+# 约定，但由pages-index.js自己的一份独立实现来sweep（原因见static_pages/
+# pages-index.js文件头注释：两边是不同的静态交付载体，没有共享点）。
 SEARCH_TOOLBAR_HTML = """<div id="pages-search-toolbar" style="margin-bottom:20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-<input type="text" data-role="q" placeholder="搜索标题或正文..." style="flex:1;min-width:200px;padding:6px;">
-<input type="text" data-role="tag" placeholder="标签筛选" style="width:120px;padding:6px;">
+<input type="text" data-role="q" placeholder="搜索标题或正文..." style="flex:1;min-width:200px;padding:6px;" data-i18n-placeholder="search_placeholder">
+<input type="text" data-role="tag" placeholder="标签筛选" style="width:120px;padding:6px;" data-i18n-placeholder="tag_placeholder">
 <input type="date" data-role="from" style="padding:6px;">
 <input type="date" data-role="to" style="padding:6px;">
-<button data-role="search-btn">搜索</button>
+<button data-role="search-btn" data-i18n="search_btn">搜索</button>
 <select data-role="page-size" style="padding:6px;">
-<option value="10">每页10篇</option>
-<option value="20">每页20篇</option>
-<option value="50">每页50篇</option>
+<option value="10" data-i18n="page_size_10">每页10篇</option>
+<option value="20" data-i18n="page_size_20">每页20篇</option>
+<option value="50" data-i18n="page_size_50">每页50篇</option>
 </select>
 </div>
 """
@@ -95,13 +98,13 @@ SEARCH_TOOLBAR_HTML = """<div id="pages-search-toolbar" style="margin-bottom:20p
 # 标签筛选框的值现场拼URL；已勾选两个走JSZip浏览器端现场打包。
 # data-role是pages-download.js读取的钩子，不涉及任何/api/*请求。
 DOWNLOAD_TOOLBAR_HTML = """<div id="pages-download-toolbar" style="margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;">
-<div style="font-size:0.9em;color:#666;margin-bottom:8px;">下载 / 离线导出（完全由本站静态文件生成，不依赖任何其他服务器）</div>
+<div style="font-size:0.9em;color:#666;margin-bottom:8px;" data-i18n="pages_download_toolbar_label">下载 / 离线导出（完全由本站静态文件生成，不依赖任何其他服务器）</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-<button type="button" data-role="download-all-btn">打包下载全站</button>
-<button type="button" data-role="download-selected-btn">下载已勾选</button>
-<button type="button" data-role="export-selected-btn">导出离线版(已勾选)</button>
-<button type="button" data-role="export-tag-btn">导出离线版(当前标签)</button>
-<button type="button" data-role="export-all-btn">导出离线版(全部)</button>
+<button type="button" data-role="download-all-btn" data-i18n="download_all_btn">打包下载全站</button>
+<button type="button" data-role="download-selected-btn" data-i18n="download_selected_btn">下载已勾选</button>
+<button type="button" data-role="export-selected-btn" data-i18n="export_selected_btn">导出离线版(已勾选)</button>
+<button type="button" data-role="export-tag-btn" data-i18n="export_tag_btn">导出离线版(当前标签)</button>
+<button type="button" data-role="export-all-btn" data-i18n="export_all_btn">导出离线版(全部)</button>
 </div>
 </div>
 """
@@ -114,12 +117,12 @@ DOWNLOAD_TOOLBAR_HTML = """<div id="pages-download-toolbar" style="margin-bottom
 # 工具栏"HTML只提供骨架和data-role钩子，行为由对应JS文件接管"是同一个分工。
 REFRESH_TOOLBAR_HTML = """<style>.refresh-btn-current{font-weight:bold;outline:2px solid #1a73e8;}</style>
 <div id="pages-refresh-toolbar" style="margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;">
-<div style="font-size:0.9em;color:#666;margin-bottom:8px;">内容刷新（请求会发送到 mirror.foxzen.me 上的执行中心，当前站点已加粗标出）</div>
+<div style="font-size:0.9em;color:#666;margin-bottom:8px;" data-i18n="pages_refresh_toolbar_label">内容刷新（请求会发送到 mirror.foxzen.me 上的执行中心，当前站点已加粗标出）</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-<button type="button" data-role="refresh-btn-mirror">刷新 mirror</button>
-<button type="button" data-role="refresh-btn-backup">刷新 backup</button>
-<button type="button" data-role="refresh-btn-github">刷新 github</button>
-<button type="button" data-role="refresh-btn-cf">刷新 cf</button>
+<button type="button" data-role="refresh-btn-mirror" data-i18n-tpl="refresh_target_btn" data-target="mirror">刷新 mirror</button>
+<button type="button" data-role="refresh-btn-backup" data-i18n-tpl="refresh_target_btn" data-target="backup">刷新 backup</button>
+<button type="button" data-role="refresh-btn-github" data-i18n-tpl="refresh_target_btn" data-target="github">刷新 github</button>
+<button type="button" data-role="refresh-btn-cf" data-i18n-tpl="refresh_target_btn" data-target="cf">刷新 cf</button>
 </div>
 </div>
 """

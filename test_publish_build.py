@@ -1700,6 +1700,131 @@ def test_download_artifacts_identical_across_hosts():
     with_download_fixture(_run)
 
 
+# ============================================================
+# 全站UI国际化：github.foxzen.me/cf.foxzen.me静态站点(本次新增)
+# ============================================================
+
+def _extract_dict_zh_en_keys(src, dict_name):
+    """从形如 var/const <dict_name> = { zh: {...}, en: {...} }; 的JS源码里
+    提取zh/en两个块各自的顶层key集合，跟test_archive_filter.py对
+    ARCHIVE_STRINGS做的检查是同一个思路，这里独立实现一份给pages-*.js用。
+    """
+    import re
+    m = re.search(dict_name + r"\s*=\s*\{(.*?)\n  \};", src, re.DOTALL)
+    if not m:
+        return None, None
+    body = m.group(1)
+    zh_block = re.search(r"zh:\s*\{(.*?)\n    \},\s*en:", body, re.DOTALL)
+    en_block = re.search(r"en:\s*\{(.*?)\n    \}", body, re.DOTALL)
+    if not (zh_block and en_block):
+        return None, None
+    zh_keys = set(re.findall(r"^\s*(\w+):", zh_block.group(1), re.MULTILINE))
+    en_keys = set(re.findall(r"^\s*(\w+):", en_block.group(1), re.MULTILINE))
+    return zh_keys, en_keys
+
+
+def test_pages_index_js_i18n_strings_key_sets_symmetric():
+    src = (Path(__file__).parent / "static_pages" / "pages-index.js").read_text(encoding="utf-8")
+    zh_keys, en_keys = _extract_dict_zh_en_keys(src, "PAGES_I18N_STRINGS")
+    check("能定位到pages-index.js::PAGES_I18N_STRINGS.zh/.en两个块", bool(zh_keys and en_keys))
+    if zh_keys and en_keys:
+        check("PAGES_I18N_STRINGS中英文翻译键集合完全一致",
+              zh_keys == en_keys, (zh_keys - en_keys, en_keys - zh_keys))
+
+
+def test_pages_index_js_defines_i18n_sweep_and_toggle():
+    src = (Path(__file__).parent / "static_pages" / "pages-index.js").read_text(encoding="utf-8")
+    check("定义了applyPagesI18n()", "function applyPagesI18n(" in src)
+    check("扫描逻辑基于[data-i18n]属性", 'querySelectorAll("[data-i18n]")' in src)
+    check("扫描逻辑也覆盖[data-i18n-placeholder]", 'querySelectorAll("[data-i18n-placeholder]")' in src)
+    check("扫描逻辑也覆盖[data-i18n-tpl]", 'querySelectorAll("[data-i18n-tpl]")' in src)
+    check("定义了setFoxzenLang()支持点击后动态切换", "function setFoxzenLang(lang)" in src)
+    check("setFoxzenLang()写入localStorage（跟其它站点用同一个key）",
+          'localStorage.setItem(FOXZEN_LANG_KEY, lang)' in src and 'FOXZEN_LANG_KEY = "foxzen_lang"' in src)
+    check("定义了wireLangToggle()绑定按钮点击", "function wireLangToggle()" in src)
+    check("initPagesSearch()在检查#app是否存在之前就调用了i18n初始化"
+          "（保证即使没有#app，语言切换按钮/其它区块也能正常工作）",
+          src.index("applyPagesI18n();") < src.index('var app = document.getElementById("app");'))
+    check("pages-index.js全文不出现.content选择器（不处理文章正文）", ".content" not in src)
+    for bad in ("translate.googleapis", "api.openai.com", "api.anthropic.com", "bing.com/translator"):
+        check(f"pages-index.js不引入翻译API: {bad}", bad not in src)
+
+
+def test_pages_index_js_i18n_never_touches_article_title():
+    """renderList()里文章标题只用于<a>的text，不应该带任何data-i18n相关属性。"""
+    import re
+    src = (Path(__file__).parent / "static_pages" / "pages-index.js").read_text(encoding="utf-8")
+    m = re.search(r"function renderList\(items\) \{(.*?)\n  \}", src, re.DOTALL)
+    check("能定位到renderList()函数体", m is not None)
+    if m:
+        title_line = next((ln for ln in m.group(1).splitlines() if "text: a.title" in ln), None)
+        check("找到构造文章标题<a>的那一行", title_line is not None)
+        if title_line:
+            check("文章标题所在元素没有data-i18n相关属性", "data-i18n" not in title_line, title_line)
+
+
+def test_publish_build_toolbars_carry_i18n_hooks_for_all_three():
+    import publish_build
+    check("SEARCH_TOOLBAR_HTML: 搜索框placeholder可翻译", 'data-i18n-placeholder="search_placeholder"' in publish_build.SEARCH_TOOLBAR_HTML)
+    check("SEARCH_TOOLBAR_HTML: 标签框placeholder可翻译", 'data-i18n-placeholder="tag_placeholder"' in publish_build.SEARCH_TOOLBAR_HTML)
+    check("SEARCH_TOOLBAR_HTML: 搜索按钮可翻译", 'data-i18n="search_btn"' in publish_build.SEARCH_TOOLBAR_HTML)
+    for size_key in ("page_size_10", "page_size_20", "page_size_50"):
+        check(f"SEARCH_TOOLBAR_HTML: 每页数量选项可翻译({size_key})",
+              f'data-i18n="{size_key}"' in publish_build.SEARCH_TOOLBAR_HTML)
+    for btn_key in ("download_all_btn", "download_selected_btn", "export_selected_btn",
+                    "export_tag_btn", "export_all_btn"):
+        check(f"DOWNLOAD_TOOLBAR_HTML: 按钮可翻译({btn_key})",
+              f'data-i18n="{btn_key}"' in publish_build.DOWNLOAD_TOOLBAR_HTML)
+    check("REFRESH_TOOLBAR_HTML: 4个按钮都用data-i18n-tpl(因为文案里嵌了target名字)",
+          publish_build.REFRESH_TOOLBAR_HTML.count('data-i18n-tpl="refresh_target_btn"') == 4)
+
+
+def test_pages_refresh_js_describe_response_supports_language_without_breaking_existing_calls():
+    """describeResponse()新增了可选的第4个lang参数，必须保证：
+    1. 不传lang(已有调用方式)仍然正常工作，跟test_pages_refresh_js_pure_
+       functions_via_node()里已有的断言完全兼容；
+    2. 传"zh"能拿到中文包装文案；
+    3. 不管传什么语言，data.detail这个后端字段的值都原样透传，不被改写。"""
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过pages-refresh.js的语言参数验证")
+        return
+    js_path = (Path(__file__).parent / "static_pages" / "pages-refresh.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+    snippet = f"""
+    const P = require("{js_path_js}");
+    console.log("no_lang_still_works", P.describeResponse("mirror", 429, {{cooldown_remaining_seconds: 42}}).includes("42"));
+    console.log("zh_cooldown", P.describeResponse("mirror", 429, {{cooldown_remaining_seconds: 42}}, "zh").includes("距离上次刷新"));
+    console.log("en_cooldown", P.describeResponse("mirror", 429, {{cooldown_remaining_seconds: 42}}, "en").includes("Less than 5 minutes"));
+    console.log("zh_detail_passthrough", P.describeResponse("github", 409, {{detail: "忙"}}, "en") === "忙");
+    console.log("en_success_wrapper", P.describeResponse("cf", 200, {{status: "success", detail: "推送完成"}}, "en").includes("Refresh succeeded"));
+    console.log("en_success_detail_kept", P.describeResponse("cf", 200, {{status: "success", detail: "推送完成"}}, "en").includes("推送完成"));
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    for name in ("no_lang_still_works", "zh_cooldown", "en_cooldown", "zh_detail_passthrough",
+                 "en_success_wrapper", "en_success_detail_kept"):
+        check(f"pages-refresh.js语言相关真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+
+def test_pages_download_js_i18n_strings_key_sets_symmetric_and_no_domains():
+    import re
+    src = (Path(__file__).parent / "static_pages" / "pages-download.js").read_text(encoding="utf-8")
+    m = re.search(r"DOWNLOAD_STRINGS\s*=\s*\{(.*?)\n  \};", src, re.DOTALL)
+    check("能定位到pages-download.js::DOWNLOAD_STRINGS", m is not None)
+    if m:
+        body = m.group(1)
+        zh_block = re.search(r"zh:\s*\{(.*?)\n    \},\s*en:", body, re.DOTALL)
+        en_block = re.search(r"en:\s*\{(.*?)\n    \}", body, re.DOTALL)
+        check("能定位到DOWNLOAD_STRINGS.zh/.en两个块", bool(zh_block and en_block))
+        if zh_block and en_block:
+            zh_keys = set(re.findall(r"^\s*(\w+):", zh_block.group(1), re.MULTILINE))
+            en_keys = set(re.findall(r"^\s*(\w+):", en_block.group(1), re.MULTILINE))
+            check("DOWNLOAD_STRINGS中英文翻译键集合完全一致", zh_keys == en_keys, (zh_keys, en_keys))
+    check("pages-download.js翻译文案不依赖static_pages/pages-index.js的全局变量"
+          "（各自独立实现，不引入新的运行时耦合）", "window.PagesIndex" not in src)
+
+
 def test_html_source_files_untouched_by_download_build():
     """构建下载产物的过程只应该在output_dir里读写，绝不修改html/源目录
     本身——跟_fix_cross_post_content_links()对posts/<id>/index.html的
@@ -1790,6 +1915,12 @@ def main():
         test_pages_download_js_pure_functions_via_node,
         test_download_artifacts_identical_across_hosts,
         test_html_source_files_untouched_by_download_build,
+        test_pages_index_js_i18n_strings_key_sets_symmetric,
+        test_pages_index_js_defines_i18n_sweep_and_toggle,
+        test_pages_index_js_i18n_never_touches_article_title,
+        test_publish_build_toolbars_carry_i18n_hooks_for_all_three,
+        test_pages_refresh_js_describe_response_supports_language_without_breaking_existing_calls,
+        test_pages_download_js_i18n_strings_key_sets_symmetric_and_no_domains,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

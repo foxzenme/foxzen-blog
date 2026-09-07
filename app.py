@@ -12,9 +12,11 @@ Flask后端。本版起，nginx不再直接serve文章页/首页/短号——这
 - GET  /<year>/<month>/<slug>.html    文章页（canonical路径），计数并返回内容
 - POST /api/refresh/<target>          公开匿名刷新（target: mirror/backup/github/cf），限流
 - GET  /api/refresh/<target>/status   查询某个target的当前状态/上次结果
-- GET  /api/search                    全文搜索
+- GET  /api/archive                   按年/月列出文章数量，供年份/月份筛选下拉框用
+- GET  /api/search                    全文搜索，支持year/month筛选（转成date_from/date_to）
 - GET  /api/download/all              打包全站zip，计数(scope=site)
-- POST /api/download/selected         打包勾选文章zip，逐篇计数(scope=article)
+- POST /api/download/selected         打包勾选/按年月/按标签筛选的文章zip，逐篇计数(scope=article)，
+                                       按年/月筛选时文件名为<year>[-<month>].zip
 - POST /api/export/base64             导出自包含离线版，按canonical_path命名，
                                        顶部附Blogger原始地址+最后修改时间
 - GET  /api/health                    健康检查
@@ -989,6 +991,26 @@ def download_zip_part(name):
     return _send_cached_zip(path, name)
 
 
+def _selected_zip_filename(body: dict) -> str:
+    """筛选下载的文件名按场景区分：按年/月筛选时用2026-08.zip这样的名字，
+    跟"下载全站"(blog-mirror-full.zip/blog-v<hash>.zip)以及手动勾选/按标签
+    下载(blog-mirror-selected.zip，行为不变)区分开，避免不同下载方式的文件
+    互相覆盖同一个文件名。调用这个函数之前download_selected()已经用
+    _resolve_scope()成功解析出至少一篇文章——year/month不合法时_resolve_scope
+    会返回空列表，在此之前就已经触发了400，所以这里的year/month必然是能
+    转成int的合法值，不需要重复做格式校验。
+    """
+    if body.get("post_ids"):
+        return "blog-mirror-selected.zip"
+    year = body.get("year")
+    if not year:
+        return "blog-mirror-selected.zip"
+    month = body.get("month")
+    if month:
+        return f"{int(year):04d}-{int(month):02d}.zip"
+    return f"{int(year):04d}.zip"
+
+
 @app.route("/api/download/selected", methods=["POST"])
 def download_selected():
     body = request.get_json(silent=True) or {}
@@ -999,7 +1021,7 @@ def download_selected():
     for pid in post_ids:
         db.record_download(pid, scope="article")
     return send_file(buf, mimetype="application/zip", as_attachment=True,
-                      download_name="blog-mirror-selected.zip")
+                      download_name=_selected_zip_filename(body))
 
 
 SAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|]')

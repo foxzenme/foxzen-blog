@@ -36,29 +36,96 @@
     return null;
   }
 
-  function describeResponse(target, httpStatus, data) {
+  // 全站UI国际化：只翻译包裹在外面的提示文案，data.detail/data.error这两个
+  // 字段是后端(app.py/safe_errors.py::safe_public_detail())出于安全考虑
+  // 构造的固定中文摘要，改动它们需要触及后端代码，超出本轮"只改前端"的
+  // 范围（已在报告里说明），所以未定义/为空时才会用到下面REFRESH_STRINGS
+  // 里的中性兜底文案，data.detail有值时始终原样透传，不做任何包装。
+  //
+  // lang形参可选、默认落到en：test_publish_build.py里已有的
+  // test_pages_refresh_js_pure_functions_via_node()调用这个函数时不传
+  // lang，这样保持向后兼容，不用改已有测试。真正的浏览器环境下由
+  // initPagesRefresh()按当前foxzen_lang传入。
+  var REFRESH_STRINGS = {
+    zh: {
+      cooldown: function (seconds) { return "距离上次刷新不足5分钟，请" + seconds + "秒后再试"; },
+      busy_fallback: "当前有另一个刷新任务正在占用资源，请稍后重试",
+      pending_fallback: "内容已推送，结论尚未产出",
+      view_progress_label: "\n查看进度: ",
+      success_detail: function (detail) { return "刷新成功：" + detail; },
+      success_plain: "刷新成功",
+      failure_prefix: "刷新失败：",
+      failure_unknown: "未知错误",
+      detail_label: "\n详情: ",
+      unknown_response: function (json) { return "未知响应: " + json; },
+      refreshing_text: "刷新中...",
+      request_failed: function (err) { return "请求失败: " + err; },
+    },
+    en: {
+      cooldown: function (seconds) { return "Less than 5 minutes since the last refresh, please try again in " + seconds + "s"; },
+      busy_fallback: "Another refresh task is currently using this resource, please try again later",
+      pending_fallback: "Content has been pushed, the result isn't ready yet",
+      view_progress_label: "\nView progress: ",
+      success_detail: function (detail) { return "Refresh succeeded: " + detail; },
+      success_plain: "Refresh succeeded",
+      failure_prefix: "Refresh failed: ",
+      failure_unknown: "Unknown error",
+      detail_label: "\nDetails: ",
+      unknown_response: function (json) { return "Unknown response: " + json; },
+      refreshing_text: "Refreshing...",
+      request_failed: function (err) { return "Request failed: " + err; },
+    },
+  };
+
+  function refreshT(lang) {
+    return REFRESH_STRINGS[lang] || REFRESH_STRINGS.en;
+  }
+
+  function describeResponse(target, httpStatus, data, lang) {
+    var t = refreshT(lang);
     if (httpStatus === 429) {
-      return "距离上次刷新不足5分钟，请" + (data.cooldown_remaining_seconds || "?") + "秒后再试";
+      return t.cooldown(data.cooldown_remaining_seconds || "?");
     }
     if (httpStatus === 409) {
-      return data.detail || "当前有另一个刷新任务正在占用资源，请稍后重试";
+      return data.detail || t.busy_fallback;
     }
     if (httpStatus === 202) {
-      return (data.detail || "内容已推送，结论尚未产出") +
-        (data.run_html_url ? "\n查看进度: " + data.run_html_url : "");
+      return (data.detail || t.pending_fallback) +
+        (data.run_html_url ? t.view_progress_label + data.run_html_url : "");
     }
     if (data.status === "success") {
-      return data.detail ? ("刷新成功：" + data.detail) : "刷新成功";
+      return data.detail ? t.success_detail(data.detail) : t.success_plain;
     }
     if (data.status === "failure") {
-      var msg = "刷新失败：" + (data.detail || "未知错误");
-      if (data.run_html_url) msg += "\n详情: " + data.run_html_url;
+      var msg = t.failure_prefix + (data.detail || t.failure_unknown);
+      if (data.run_html_url) msg += t.detail_label + data.run_html_url;
       return msg;
     }
-    return "未知响应: " + JSON.stringify(data);
+    return t.unknown_response(JSON.stringify(data));
   }
 
   // DOM部分。
+
+  // 跟fetch_blog.py::I18N_BLOCK/static/index.js/static_pages/pages-index.js
+  // 同一个localStorage key/同一套检测算法的第四份独立实现——这里只需要
+  // "点击那一刻的当前语言"（每次点击都现读localStorage，不缓存），不需要
+  // 像pages-index.js那样维护一个可以被setFoxzenLang()动态更新的全局变量，
+  // 所以不用监听语言切换按钮的点击事件，也不产生跟pages-index.js之间的
+  // 新耦合。aria-label文案仍然只在initPagesRefresh()首次运行时设置一次，
+  // 语言切换后不会跟着更新——这是一个次要的、已知的无障碍属性局限（视觉可见
+  // 的按钮文字由pages-index.js::applyPagesI18n()的data-i18n-tpl sweep覆盖，
+  // 不受此影响），已在报告里说明。
+  function getFoxzenLang() {
+    try {
+      var saved = localStorage.getItem("foxzen_lang");
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+    for (var i = 0; i < langs.length; i++) {
+      if (/^zh/i.test(langs[i])) return "zh";
+    }
+    return "en";
+  }
 
   function initPagesRefresh(opts) {
     opts = opts || {};
@@ -67,6 +134,7 @@
     if (!doc) return;
 
     var current = currentTargetFromHostname(win && win.location ? win.location.hostname : "");
+    var initialLangIsZh = getFoxzenLang() === "zh";
 
     REFRESH_TARGETS.forEach(function (target) {
       var btn = doc.querySelector('[data-role="refresh-btn-' + target + '"]');
@@ -75,12 +143,15 @@
       if (target === current) {
         btn.classList.add("refresh-btn-current");
       }
-      btn.setAttribute("aria-label", "刷新 " + target + (target === current ? "（当前站点）" : ""));
+      btn.setAttribute("aria-label", initialLangIsZh
+        ? "刷新 " + target + (target === current ? "（当前站点）" : "")
+        : "Refresh " + target + (target === current ? " (current site)" : ""));
 
       btn.onclick = function () {
+        var lang = getFoxzenLang();
         btn.disabled = true;
         var originalText = btn.textContent;
-        btn.textContent = "刷新中...";
+        btn.textContent = refreshT(lang).refreshing_text;
 
         fetch(REFRESH_API_BASE + "/api/refresh/" + target, { method: "POST" })
           .then(function (resp) {
@@ -89,10 +160,10 @@
             });
           })
           .then(function (result) {
-            alert(describeResponse(target, result.httpStatus, result.data));
+            alert(describeResponse(target, result.httpStatus, result.data, lang));
           })
           .catch(function (e) {
-            alert("请求失败: " + e);
+            alert(refreshT(lang).request_failed(e));
           })
           .finally(function () {
             btn.disabled = false;

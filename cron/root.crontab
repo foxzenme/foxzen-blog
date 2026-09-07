@@ -4,7 +4,13 @@ IA_SECRET_KEY=REDACTED
 
 18 0,6,12,18 * * * "/home/ubuntu/.acme.sh"/acme.sh --cron --home "/home/ubuntu/.acme.sh" > /dev/null
 
-0 * * * * cd /root/blog-mirror && /root/blog-mirror/venv/bin/python3 fetch_blog.py >> /root/blog-mirror/fetch.log 2>&1
+# P0修复(见cron_refresh_mirror.py文档字符串)：不再直接跑fetch_blog.py——
+# 那样完全绕开app.py::_run_content_fetch()的CONTENT_FETCH_LOCK，如果整点
+# cron和手动点击刷新按钮撞在一起，会有两个fetch_blog.py同时读写同一个
+# data/blog.db和html/工作树。现在改成调用本机已经在跑的/api/refresh/mirror，
+# 跟手动刷新按钮走完全相同的加锁/冷却/生成 fencing 路径。fetch_blog.py本身
+# 没有被删除，仍然是实际抓取实现，只是不再被cron直接调用。
+0 * * * * cd /root/blog-mirror && /root/blog-mirror/venv/bin/python3 cron_refresh_mirror.py >> /root/blog-mirror/fetch.log 2>&1
 
 0 3 * * * cd /root/blog-mirror && TG_BOT_TOKEN="REDACTED" TG_CHAT_ID="REDACTED" /root/blog-mirror/venv/bin/python3 backup_to_hetzner.py >> /root/blog-mirror/backup.log 2>&1
 

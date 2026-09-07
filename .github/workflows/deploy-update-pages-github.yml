@@ -33,6 +33,12 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: foxzenme/foxzen-update
+          # 原因见deploy-status-pages-github.yml里同一个参数的注释：
+          # 不依赖"默认分支"元数据(第一次真实运行status这边时就报过
+          # wrong_branch: 实际main，跟仓库设置里显示的master不一致)，
+          # 显式指定ref: master，让actions/checkout落在本地master分支
+          # (而不是detached HEAD)，匹配git_publish.py的分支检查。
+          ref: master
           token: ${{ secrets.SATELLITE_PAGES_TOKEN }}
           # 原因见deploy-status-pages-github.yml里同一个参数的注释：强制
           # 让git_publish.py自己的GIT_ASKPASS机制成为实际生效的认证路径。

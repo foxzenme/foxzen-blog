@@ -36,6 +36,16 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: foxzenme/foxzen-status
+          # 显式指定ref：即使仓库的"默认分支"设置是master，
+          # actions/checkout在不传ref时解析到的分支曾经实际是main
+          # (第一次真实运行时报wrong_branch: 实际main就是这么发现的)——
+          # 不依赖"默认分支"这个可能跟仓库实际创建历史不一致的元数据，
+          # 直接明确要master。actions/checkout对显式branch ref走的是
+          # `git checkout -B <ref> refs/remotes/origin/<ref>`，会真正
+          # 落在本地master分支上而不是detached HEAD，跟
+          # git_publish.py::_check_publish_preconditions()要求的
+          # "rev-parse --abbrev-ref HEAD必须是master"是匹配的。
+          ref: master
           token: ${{ secrets.SATELLITE_PAGES_TOKEN }}
           # 显式关掉actions/checkout自己持久化的认证头：如果让它保留，
           # 后面git_publish.py内部git push时git会优先用这个已经配置好的

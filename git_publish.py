@@ -66,7 +66,7 @@ def detect_changed_paths(repo_dir: Path, subpath: str) -> list[str]:
     """
     result = subprocess.run(
         ["git", "status", "--porcelain", "--", subpath],
-        cwd=str(repo_dir), capture_output=True, text=True, timeout=30,
+        cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     if result.returncode != 0:
         raise GitPublishError("git_commit_error", f"git status失败: {result.stderr[-500:]}")
@@ -75,7 +75,7 @@ def detect_changed_paths(repo_dir: Path, subpath: str) -> list[str]:
 
 def current_head_sha(repo_dir: Path) -> str | None:
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
+        ["git", "rev-parse", "HEAD"], cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8", timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else None
 
@@ -94,7 +94,7 @@ def _check_publish_preconditions(repo_dir: Path) -> None:
     """
     branch_result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
+        cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8", timeout=10,
     )
     if branch_result.returncode != 0:
         raise GitPublishError("repository_state_error",
@@ -108,7 +108,7 @@ def _check_publish_preconditions(repo_dir: Path) -> None:
 
     git_dir_result = subprocess.run(
         ["git", "rev-parse", "--git-dir"],
-        cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
+        cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8", timeout=10,
     )
     if git_dir_result.returncode != 0:
         raise GitPublishError("repository_state_error",
@@ -167,7 +167,7 @@ def _push(repo_dir: Path, push_token: str, push_timeout_seconds: int) -> str:
     try:
         result = subprocess.run(
             ["git", "push", "origin", _PUBLISH_BRANCH],
-            cwd=str(repo_dir), capture_output=True, text=True,
+            cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8",
             timeout=push_timeout_seconds, env=push_env,
         )
     except subprocess.TimeoutExpired:
@@ -226,7 +226,8 @@ def commit_and_push(repo_dir: Path, subpath: str, author_name: str, author_email
 
     if changed:
         add_result = subprocess.run(
-            ["git", "add", "--", subpath], cwd=str(repo_dir), capture_output=True, text=True, timeout=30,
+            ["git", "add", "--", subpath], cwd=str(repo_dir), capture_output=True, text=True,
+            encoding="utf-8", timeout=30,
         )
         if add_result.returncode != 0:
             return {"pushed": False, "error_category": "git_commit_error",
@@ -242,7 +243,8 @@ def commit_and_push(repo_dir: Path, subpath: str, author_name: str, author_email
         # 原封不动地留在index里，既不会被这次提交带走，也不会被丢弃。
         commit_result = subprocess.run(
             ["git", "commit", "--only", "-m", commit_message, "--", subpath],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=30, env=commit_env,
+            cwd=str(repo_dir), capture_output=True, text=True, encoding="utf-8",
+            timeout=30, env=commit_env,
         )
         if commit_result.returncode != 0:
             return {"pushed": False, "error_category": "git_commit_error",

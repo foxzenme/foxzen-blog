@@ -272,6 +272,235 @@ def test_coexists_with_status_page():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ============================================================
+# 全站UI国际化：update.foxzen.me（本次新增）
+# ============================================================
+
+def test_lang_toggle_button_present():
+    gsp, output_dir, text, entries, tmp = _build_with_text(
+        "2026-09-05 10:00|通知|语言按钮测试用公告。\n"
+    )
+    try:
+        check("页面包含右上角语言切换按钮容器", 'class="lang-toggle"' in text)
+        check("包含中文切换按钮", 'data-lang-btn="zh"' in text)
+        check("包含英文切换按钮", 'data-lang-btn="en"' in text)
+        check(".lang-toggle使用position:fixed（右上角）", "position: fixed" in text)
+        check("存在窄屏媒体查询", "@media (max-width: 480px)" in text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_ui_labels_have_data_i18n():
+    gsp, output_dir, text, entries, tmp = _build_with_text(
+        "2026-09-05 10:00|通知|UI标签测试用公告。\n"
+    )
+    try:
+        check('副标题带data-i18n="update_subtitle"', 'data-i18n="update_subtitle"' in text)
+        check('跳转链接带data-i18n="view_status_link"', 'data-i18n="view_status_link"' in text)
+        check('空状态提示带data-i18n="no_announcements"', 'data-i18n="no_announcements"' in text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_update_strings_zh_en_key_sets_symmetric():
+    import re
+    gsp, output_dir, text, entries, tmp = _build_with_text(
+        "2026-09-05 10:00|通知|翻译字典对称性测试用公告。\n"
+    )
+    try:
+        m = re.search(r"var UPDATE_STRINGS = \{(.*?)\n  \};", text, re.DOTALL)
+        check("能定位到UPDATE_STRINGS字典", m is not None)
+        if m:
+            body = m.group(1)
+            zh_keys = set(re.findall(r"(\w+):", re.search(r"zh:\s*\{(.*?)\},\s*en:", body, re.DOTALL).group(1)))
+            en_keys = set(re.findall(r"(\w+):", re.search(r"en:\s*\{(.*?)\},?\s*$", body, re.DOTALL).group(1)))
+            check("UPDATE_STRINGS中英文翻译键集合完全一致",
+                  zh_keys == en_keys, (zh_keys - en_keys, en_keys - zh_keys))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_announcement_entries_never_get_data_i18n():
+    """核心边界：公告的time/type/message来自GreenCloud服务器上手工维护的
+    data/announcements.txt，绝不能被当成UI文案自动翻译。用ENTRY_TEMPLATE
+    源码 + 真实渲染结果两处确认：公告条目本身的HTML片段里不出现data-i18n。
+    """
+    import re
+    import generate_status_page as gsp
+    check("ENTRY_TEMPLATE源码里不含data-i18n（公告内容结构上就不可能被套上翻译属性）",
+          "data-i18n" not in gsp.ENTRY_TEMPLATE)
+
+    text_input = (
+        "2026-09-01 08:00|维护公告|这是一条真实的中文公告正文，用于确认公告内容不会被自动翻译。\n"
+        "2026-09-02 09:00|Incident|English announcement body, must stay untouched too.\n"
+    )
+    built_gsp, output_dir, text, entries, tmp = _build_with_text(text_input)
+    try:
+        check("两条公告都被正确解析", len(entries) == 2, len(entries))
+        # 用" data-i18n=\""(带前导空格+等号+引号，HTML属性的真实形状)而不是裸
+        # 子串"data-i18n"去匹配——避免公告正文如果碰巧提到这个词组本身时被
+        # 误判成"带了翻译属性"，这是属性存在性检查，不是文本内容检查。
+        for entry_html in re.findall(r'<div class="entry">.*?</div>\s*</div>', text, re.DOTALL):
+            check("公告条目HTML片段不含真正的data-i18n属性",
+                  ' data-i18n="' not in entry_html, entry_html)
+        check("中文公告正文原样出现（未被翻译成英文标签或改写）",
+              "这是一条真实的中文公告正文，用于确认公告内容不会被自动翻译。" in text)
+        check("英文公告正文原样出现（不会被当成需要翻译成中文的UI文案）",
+              "English announcement body, must stay untouched too." in text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# publish_update_page()新增的subpath参数 / --repo-dir CLI开关：用于发布到
+# GitHub Pages卫星仓库(foxzen-update)，跟原有"推到foxzen-blog自己的
+# static_status/子目录"用法并存。全部对着一次性临时git仓库(work repo +
+# 本地bare remote)操作，绝不碰这个项目自己的仓库、绝不碰真实网络/GitHub
+# ——跟test_git_publish.py/test_status_page.py同一个思路。
+# ---------------------------------------------------------------------------
+
+def _run_cmd(*args, cwd, env=None, check_ok=True):
+    import subprocess
+    result = subprocess.run(list(args), cwd=str(cwd), capture_output=True, text=True,
+                             encoding="utf-8", env=env)
+    if check_ok and result.returncode != 0:
+        raise RuntimeError(f"{args} 失败: {result.stderr}")
+    return result
+
+
+def _env_with_identity(name, email):
+    import os
+    env = dict(os.environ)
+    env.update({"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+                "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email})
+    return env
+
+
+def _with_temp_satellite_repo(fn):
+    tmp = Path(tempfile.mkdtemp(prefix="satellite_repo_test_"))
+    try:
+        remote_dir = tmp / "remote.git"
+        work_dir = tmp / "work"
+        _run_cmd("git", "init", "--bare", "-b", "master", str(remote_dir), cwd=tmp)
+        _run_cmd("git", "init", "-b", "master", str(work_dir), cwd=tmp)
+        (work_dir / "README.md").write_text("init\n", encoding="utf-8")
+        _run_cmd("git", "add", "README.md", cwd=work_dir)
+        _run_cmd("git", "commit", "-m", "init", cwd=work_dir,
+                 env=_env_with_identity("Setup", "setup@example.invalid"))
+        _run_cmd("git", "remote", "add", "origin", str(remote_dir), cwd=work_dir)
+        _run_cmd("git", "push", "-u", "origin", "master", cwd=work_dir)
+        fn(work_dir, remote_dir)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _with_github_token(value, fn):
+    import os
+    had = "GITHUB_TOKEN" in os.environ
+    saved = os.environ.get("GITHUB_TOKEN")
+    try:
+        if value is None:
+            os.environ.pop("GITHUB_TOKEN", None)
+        else:
+            os.environ["GITHUB_TOKEN"] = value
+        fn()
+    finally:
+        if had:
+            os.environ["GITHUB_TOKEN"] = saved
+        else:
+            os.environ.pop("GITHUB_TOKEN", None)
+
+
+def test_publish_update_page_subpath_dot_writes_at_satellite_repo_root():
+    """subpath="."时，repo_dir/output_dir都指向卫星仓库checkout本身——
+    index.html/CNAME必须直接落在仓库根目录，不能嵌套在static_status/
+    子目录里(那是"作为foxzen-blog自己的子目录被提交"这个不同场景的行为)。
+    """
+    def _run_case(work_dir, remote_dir):
+        import generate_status_page as gsp
+
+        def _do():
+            result = gsp.publish_update_page(
+                repo_dir=work_dir, output_dir=work_dir,
+                announcements_file=BASE_DIR / "data" / "announcements.txt.example",
+                subpath=".",
+            )
+            check("推送成功", result["pushed"], result)
+            check("index.html落在仓库根目录(不是static_status/index.html)",
+                  (work_dir / "index.html").exists())
+            check("CNAME落在仓库根目录", (work_dir / "CNAME").exists())
+            check("CNAME内容是update.foxzen.me",
+                  (work_dir / "CNAME").read_text(encoding="utf-8").strip() == "update.foxzen.me")
+            check("没有意外生成static_status/子目录", not (work_dir / "static_status").exists())
+            remote_head = _run_cmd("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
+            check("远程(bare repo)真的收到了这次push", remote_head == result["commit_sha"])
+        _with_github_token("fake-test-token-not-a-real-credential", _do)
+    _with_temp_satellite_repo(_run_case)
+
+
+def test_publish_update_page_default_subpath_unchanged():
+    """回归测试：不传subpath参数时，必须保持原有行为——文件推到repo_dir下的
+    PUBLISH_SUBPATH("static_status")子目录，而不是这次新加的repo_dir根目录，
+    确认这次新增的可选参数没有悄悄改变任何一个现有调用方(app.py cutover后
+    的--publish、任何已有脚本)看到的行为。
+    """
+    def _run_case(work_dir, remote_dir):
+        import generate_status_page as gsp
+
+        def _do():
+            # 注意：output_dir/subpath都必须显式对齐到work_dir，不能只传
+            # repo_dir——publish_update_page()的output_dir参数默认值是
+            # 真实项目的OUTPUT_DIR常量(BASE_DIR/"static_status")，如果这里
+            # 只传repo_dir=work_dir而不传output_dir，函数会把index.html/
+            # CNAME写到真实项目目录而不是临时仓库(曾经因为这个疏漏真的
+            # 覆盖过一次仓库根目录下的static_status/，已用真实的
+            # generate_status_page.py重新生成过、确认该目录未被git追踪、
+            # 不影响任何已提交内容或线上foxzen-update.pages.dev部署，
+            # 但这里必须把测试本身修对，不能只是善后)。这里显式传
+            # output_dir=work_dir/"static_status"，只把subpath留空
+            # (用它的默认值PUBLISH_SUBPATH)，这样才是真正只测试"subpath
+            # 参数不传时是否还是static_status"这一件事。
+            result = gsp.publish_update_page(
+                repo_dir=work_dir, output_dir=work_dir / "static_status",
+                announcements_file=BASE_DIR / "data" / "announcements.txt.example",
+            )
+            check("推送成功", result["pushed"], result)
+            check("默认行为：文件落在static_status/子目录，不是仓库根目录",
+                  (work_dir / "static_status" / "index.html").exists())
+            check("仓库根目录本身没有多出index.html", not (work_dir / "index.html").exists())
+            committed = _run_cmd("git", "show", "--name-only", "--format=", "HEAD", cwd=work_dir).stdout
+            check("commit里的路径带static_status/前缀",
+                  all(f.startswith("static_status/") for f in committed.splitlines() if f.strip()), committed)
+        _with_github_token("fake-test-token-not-a-real-credential", _do)
+    _with_temp_satellite_repo(_run_case)
+
+
+def test_cli_repo_dir_flag_generates_and_publishes_end_to_end():
+    """直接跑真实CLI命令(python generate_status_page.py --publish --repo-dir
+    <path>)，验证的是GitHub Actions workflow(deploy-update-pages-github.yml)
+    实际会调用的那一行命令本身，而不只是内部Python函数——argparse接线、
+    Path类型转换、--repo-dir与--publish的组合逻辑都在这条路径上。
+    """
+    def _run_case(work_dir, remote_dir):
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["GITHUB_TOKEN"] = "fake-test-token-not-a-real-credential"
+        result = subprocess.run(
+            [sys.executable, str(BASE_DIR / "generate_status_page.py"),
+             "--publish", "--repo-dir", str(work_dir)],
+            cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+        )
+        check("CLI命令退出码为0", result.returncode == 0, result.stderr)
+        check("index.html落在仓库根目录", (work_dir / "index.html").exists())
+        check("CNAME内容是update.foxzen.me",
+              (work_dir / "CNAME").read_text(encoding="utf-8").strip() == "update.foxzen.me")
+        remote_head = _run_cmd("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
+        check("远程(bare repo)真的收到了这次push", bool(remote_head))
+    _with_temp_satellite_repo(_run_case)
+
+
 def main():
     tests = [
         test_empty_announcements_file,
@@ -287,6 +516,13 @@ def main():
         test_no_secret_in_output,
         test_cname_correct,
         test_coexists_with_status_page,
+        test_lang_toggle_button_present,
+        test_ui_labels_have_data_i18n,
+        test_update_strings_zh_en_key_sets_symmetric,
+        test_announcement_entries_never_get_data_i18n,
+        test_publish_update_page_subpath_dot_writes_at_satellite_repo_root,
+        test_publish_update_page_default_subpath_unchanged,
+        test_cli_repo_dir_flag_generates_and_publishes_end_to_end,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

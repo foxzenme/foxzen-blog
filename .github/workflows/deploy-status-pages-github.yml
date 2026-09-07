@@ -1,0 +1,59 @@
+name: Deploy status.foxzen.me to GitHub Pages (foxzen-status)
+
+# 跟pages.yml一样先只手动触发：build_status_page.py生成的外壳本身构建时
+# 不联网、内容完全由PAGE_TEMPLATE决定（真正的健康检查在访客浏览器里现场
+# 跑），理论上每次运行产出都一样，git_publish.commit_and_push()检测到
+# "无变化"会直接no-op——加自动触发不会有意外副作用，但先跟pages.yml保持
+# 同样保守的策略，人工确认整个跨仓库发布流程没问题之后再考虑加。
+#
+# 需要人工先完成的前置条件（这个workflow本身不做，也做不到）：
+#   1. 创建 foxzen-status 这个新仓库（属于同一个GitHub账号/组织），默认
+#      分支设为 master（git_publish.py硬编码要求发布分支是master）。
+#   2. 该仓库 Settings -> Pages 选择 "Deploy from a branch"，指向 master
+#      分支根目录——不需要在foxzen-status仓库里再放任何workflow文件，
+#      内容由这边push过去就会被GitHub Pages自动接管。
+#   3. 生成一个只对foxzen-status仓库有contents:write权限的fine-grained
+#      PAT，添加到本仓库(foxzen-blog) Settings -> Secrets -> Actions，
+#      命名为 SATELLITE_PAGES_TOKEN（跟deploy-update-pages-github.yml
+#      共用同一个secret，建议授权时把foxzen-update也一起选上）。
+#   4. （更远期，不属于这个workflow）真正决定status.foxzen.me的DNS要指向
+#      GitHub Pages还是Cloudflare Pages时，再去foxzen-status仓库设置里
+#      绑定自定义域名——本次不修改DNS。
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout foxzen-blog (generator source)
+        uses: actions/checkout@v6
+
+      - name: Checkout foxzen-status (satellite Pages repo)
+        uses: actions/checkout@v6
+        with:
+          repository: foxzenme/foxzen-status
+          token: ${{ secrets.SATELLITE_PAGES_TOKEN }}
+          # 显式关掉actions/checkout自己持久化的认证头：如果让它保留，
+          # 后面git_publish.py内部git push时git会优先用这个已经配置好的
+          # http.extraHeader而不是我们自己通过GIT_ASKPASS显式传入的token，
+          # 这样git_publish.py那一整套"push_token只经GIT_ASKPASS+专用环境
+          # 变量传递、不写入remote URL/.git/config"的安全设计就形同虚设。
+          persist-credentials: false
+          path: satellite-status
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate and publish status page
+        env:
+          GITHUB_TOKEN: ${{ secrets.SATELLITE_PAGES_TOKEN }}
+        run: python build_status_page.py --publish satellite-status

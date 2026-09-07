@@ -1,0 +1,53 @@
+name: Deploy update.foxzen.me to GitHub Pages (foxzen-update)
+
+# 跟deploy-status-pages-github.yml同样的保守策略：先只手动触发，等确认
+# 跨仓库发布流程没问题、且你自己想要"改announcements.txt自动发布"这种
+# 自动化时，再考虑加push触发器（比如只在data/announcements.txt变化时跑）。
+#
+# 需要人工先完成的前置条件（这个workflow本身不做，也做不到）：
+#   1. 创建 foxzen-update 这个新仓库，默认分支设为 master（git_publish.py
+#      硬编码要求发布分支是master）。
+#   2. 该仓库 Settings -> Pages 选择 "Deploy from a branch"，指向 master
+#      分支根目录，不需要在foxzen-update仓库里再放任何workflow文件。
+#   3. 生成一个对foxzen-status/foxzen-update都有contents:write权限的
+#      fine-grained PAT，添加到本仓库(foxzen-blog) Settings -> Secrets ->
+#      Actions，命名为 SATELLITE_PAGES_TOKEN（跟
+#      deploy-status-pages-github.yml共用同一个secret）。
+#   4. （更远期，不属于这个workflow）真正决定update.foxzen.me的DNS要指向
+#      GitHub Pages还是Cloudflare Pages时，再去foxzen-update仓库设置里
+#      绑定自定义域名——本次不修改DNS。
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout foxzen-blog (generator source + data/announcements.txt)
+        uses: actions/checkout@v6
+
+      - name: Checkout foxzen-update (satellite Pages repo)
+        uses: actions/checkout@v6
+        with:
+          repository: foxzenme/foxzen-update
+          token: ${{ secrets.SATELLITE_PAGES_TOKEN }}
+          # 原因见deploy-status-pages-github.yml里同一个参数的注释：强制
+          # 让git_publish.py自己的GIT_ASKPASS机制成为实际生效的认证路径。
+          persist-credentials: false
+          path: satellite-update
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate and publish update page
+        env:
+          GITHUB_TOKEN: ${{ secrets.SATELLITE_PAGES_TOKEN }}
+        run: python generate_status_page.py --publish --repo-dir satellite-update

@@ -2,20 +2,168 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>foxzen.me</title>
 <style>
 body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 80px auto; padding: 0 20px; color: #222; }
-h1 { font-size: 1.5em; }
-ul { line-height: 2; }
+h1 { font-size: 1.5em; margin: 0 0 4px; }
+.page-intro { color: #666; font-size: 0.9em; margin: 0 0 28px; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { margin: 0 0 18px; padding-bottom: 18px; border-bottom: 1px solid #e6e6e6; }
+li:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
 a { color: #0645ad; text-decoration: none; }
 a:hover { text-decoration: underline; }
+.entry-name { font-weight: bold; }
+.entry-domain { color: #888; font-size: 0.85em; }
+.entry-desc { color: #666; font-size: 0.85em; margin-top: 2px; }
+.entry-planned { color: #aaa; }
+.entry-note { font-style: italic; }
+.lang-toggle {
+  position: fixed; top: 12px; right: 12px; z-index: 100;
+  display: inline-block; margin: 0; font-size: 0.85em;
+  background: rgba(255,255,255,0.92); padding: 4px 10px; border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+.lang-toggle button {
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  color: #999; font-size: 1em; font-family: inherit;
+}
+.lang-toggle button.active { color: #1a73e8; font-weight: bold; }
+@media (max-width: 480px) {
+  .lang-toggle { top: 8px; right: 8px; font-size: 0.75em; padding: 3px 8px; }
+}
 </style>
 </head>
 <body>
+<div class="lang-toggle">
+  <button type="button" data-lang-btn="zh" aria-label="切换到中文">中</button> / <button type="button" data-lang-btn="en" aria-label="Switch to English">EN</button>
+</div>
 <h1>foxzen.me</h1>
+<p class="page-intro" data-i18n="page_intro">FoxZen 的全部公开服务入口。</p>
 <ul>
-<li><a href="/mirror/">狐禅志异 —— 博客镜像</a></li>
-<li><a href="/gpg/">GPG 公钥</a></li>
+<li>
+<a class="entry-name" href="https://mirror.foxzen.me/" target="_blank" rel="noopener" data-i18n="entry_mirror_name">狐禅志异 —— 博客镜像</a><br>
+<span class="entry-domain">mirror.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_mirror_desc">博客内容访问入口，文章镜像站。</div>
+</li>
+<li>
+<span class="entry-name entry-planned" data-i18n="entry_github_name">GitHub Pages 静态版博客（建设中，尚未上线）</span><br>
+<span class="entry-domain entry-planned">github.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_github_desc">基于 GitHub Pages 的独立静态博客镜像，不依赖 VPS，目前尚未正式上线。</div>
+</li>
+<li>
+<span class="entry-name entry-planned" data-i18n="entry_cf_name">Cloudflare Pages 静态版博客（建设中，尚未上线）</span><br>
+<span class="entry-domain entry-planned">cf.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_cf_desc">基于 Cloudflare Pages 的独立静态博客镜像，目前尚未正式上线。</div>
+</li>
+<li>
+<a class="entry-name" href="https://foxzen-status.pages.dev/" target="_blank" rel="noopener" data-i18n="entry_status_name">状态页 · 服务与同步状态</a><br>
+<span class="entry-domain">status.foxzen.me</span> · <span class="entry-note" data-i18n="entry_provisional_suffix">（正式域名生效前，暂时通过以下地址访问）</span><br>
+<span class="entry-domain">foxzen-status.pages.dev</span>
+<div class="entry-desc" data-i18n="entry_status_desc">查看 mirror、backup、GitHub Pages、Cloudflare Pages 等服务的运行状态。</div>
+</li>
+<li>
+<a class="entry-name" href="https://foxzen-update.pages.dev/" target="_blank" rel="noopener" data-i18n="entry_update_name">更新公告 · 更新日志</a><br>
+<span class="entry-domain">update.foxzen.me</span> · <span class="entry-note" data-i18n="entry_provisional_suffix">（正式域名生效前，暂时通过以下地址访问）</span><br>
+<span class="entry-domain">foxzen-update.pages.dev</span>
+<div class="entry-desc" data-i18n="entry_update_desc">查看站点更新、维护、公告等信息。</div>
+</li>
+<li>
+<a class="entry-name" href="/gpg/" data-i18n="entry_gpg_name">GPG 公钥</a><br>
+<span class="entry-domain">foxzen.me/gpg/</span>
+</li>
 </ul>
+<script>
+(function () {
+  "use strict";
+  // 全站UI国际化：跟fetch_blog.py::I18N_BLOCK、generate_status_page.py等
+  // 其它几份独立实现同一套localStorage key/检测算法/data-i18n约定——这是
+  // 又一份独立实现（html/foxzen/index.html是纯手工维护的静态文件，没有
+  // Python模板/构建脚本）。这段脚本只认[data-i18n]属性，只翻译入口名称/
+  // 说明这些UI文案；子域名本身(mirror.foxzen.me、foxzen-status.pages.dev
+  // 等)永远不会被打上data-i18n，语言切换不会改动它们一个字符。
+  var GATEWAY_STRINGS = {
+    zh: {
+      page_intro: "FoxZen 的全部公开服务入口。",
+      entry_mirror_name: "狐禅志异 —— 博客镜像",
+      entry_mirror_desc: "博客内容访问入口，文章镜像站。",
+      entry_github_name: "GitHub Pages 静态版博客（建设中，尚未上线）",
+      entry_github_desc: "基于 GitHub Pages 的独立静态博客镜像，不依赖 VPS，目前尚未正式上线。",
+      entry_cf_name: "Cloudflare Pages 静态版博客（建设中，尚未上线）",
+      entry_cf_desc: "基于 Cloudflare Pages 的独立静态博客镜像，目前尚未正式上线。",
+      entry_status_name: "状态页 · 服务与同步状态",
+      entry_status_desc: "查看 mirror、backup、GitHub Pages、Cloudflare Pages 等服务的运行状态。",
+      entry_update_name: "更新公告 · 更新日志",
+      entry_update_desc: "查看站点更新、维护、公告等信息。",
+      entry_provisional_suffix: "（正式域名生效前，暂时通过以下地址访问）",
+      entry_gpg_name: "GPG 公钥"
+    },
+    en: {
+      page_intro: "All public FoxZen service entry points.",
+      entry_mirror_name: "FoxZen Blog Mirror",
+      entry_mirror_desc: "Blog content access point, article mirror site.",
+      entry_github_name: "GitHub Pages static blog (in progress, not live yet)",
+      entry_github_desc: "An independent static blog mirror on GitHub Pages, not dependent on the VPS. Not yet formally live.",
+      entry_cf_name: "Cloudflare Pages static blog (in progress, not live yet)",
+      entry_cf_desc: "An independent static blog mirror on Cloudflare Pages. Not yet formally live.",
+      entry_status_name: "Status page · service & sync status",
+      entry_status_desc: "Check the operating status of mirror, backup, GitHub Pages, Cloudflare Pages and other services.",
+      entry_update_name: "Update announcements · changelog",
+      entry_update_desc: "See site updates, maintenance, and announcements.",
+      entry_provisional_suffix: "(temporary address, until the official domain goes live)",
+      entry_gpg_name: "GPG public key"
+    }
+  };
+  var STORAGE_KEY = "foxzen_lang";
+
+  function detectDefaultLang() {
+    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+    for (var i = 0; i < langs.length; i++) {
+      if (/^zh/i.test(langs[i])) return "zh";
+    }
+    return "en";
+  }
+
+  function getLang() {
+    try {
+      var saved = localStorage.getItem(STORAGE_KEY);
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    return detectDefaultLang();
+  }
+
+  function applyLang(lang) {
+    var dict = GATEWAY_STRINGS[lang] || GATEWAY_STRINGS.en;
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-i18n");
+      if (dict[key] !== undefined) nodes[i].textContent = dict[key];
+    }
+    document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
+    var btns = document.querySelectorAll("[data-lang-btn]");
+    for (var k = 0; k < btns.length; k++) {
+      if (btns[k].getAttribute("data-lang-btn") === lang) {
+        btns[k].classList.add("active");
+      } else {
+        btns[k].classList.remove("active");
+      }
+    }
+  }
+
+  function setLang(lang) {
+    try { localStorage.setItem(STORAGE_KEY, lang); } catch (e) {}
+    applyLang(lang);
+  }
+
+  var toggleBtns = document.querySelectorAll("[data-lang-btn]");
+  for (var m = 0; m < toggleBtns.length; m++) {
+    toggleBtns[m].addEventListener("click", function (e) {
+      setLang(e.currentTarget.getAttribute("data-lang-btn"));
+    });
+  }
+
+  applyLang(getLang());
+})();
+</script>
 </body>
 </html>

@@ -17,25 +17,53 @@ publish_build.py的pages-*.js需要被多篇文章/多个host共用，这里只�
 
 用法:
     python3 build_status_page.py
-    （生成 publish_status/index.html + publish_status/CNAME）
+    （只在本地生成 publish_status/index.html + publish_status/CNAME，不做任何git操作）
+
+    python3 build_status_page.py --publish <REPO_DIR>
+    （生成后立即复用git_publish.py，commit+push到REPO_DIR这个独立的卫星仓库——
+    例如GitHub Pages专用的foxzen-status仓库的本地checkout路径。REPO_DIR
+    必须是已经clone好、能fast-forward push到origin/master的独立git仓库，
+    且默认分支必须是"master"（git_publish.py硬编码检查这一点，见其文档
+    字符串B3修复说明）——这跟update.foxzen.me的CNAME、Cloudflare Pages
+    使用的static_status/是"foxzen-blog仓库内部的一个子目录"不同：这个页面
+    从设计起就没有那种用法（publish_status/本身在.gitignore里，从不打算
+    进foxzen-blog自己的git历史），repo_dir就是output_dir本身，commit的
+    subpath固定是"."，不需要额外的PUBLISH_SUBPATH参数。需要环境变量
+    GITHUB_TOKEN。
 
 尚未完成、需要人工决定的部分（本次不擅自处理）：
     - status.foxzen.me这个子域名的DNS记录当前已经存在但代理到GreenCloud的
       IP；如果采用这里的纯静态方案，需要在Cloudflare控制台把它改成指向
       GitHub Pages/Cloudflare Pages（本轮不修改DNS）；
-    - publish_status/最终推送到哪个GitHub仓库/Cloudflare Pages项目、是否
-      需要单独的GitHub Actions workflow，需要你确认后再实现（可以参考
-      .github/workflows/pages.yml的现有模式）；
+    - GitHub Pages这一侧已经决定用一个独立的新仓库foxzen-status承载（见
+      .github/workflows/deploy-status-pages-github.yml），因为GitHub Pages
+      一个仓库只能绑定一个自定义域名，foxzen-blog自己的Pages名额已经给了
+      github.foxzen.me——这个新仓库需要人工创建、开启Pages(Deploy from a
+      branch)、把默认分支设成master、并在foxzen-blog仓库里加一个有权限
+      推送到它的PAT/deploy key(建议叫SATELLITE_PAGES_TOKEN，跟
+      deploy-update-pages-github.yml共用同一个secret)，这几步本次不擅自
+      处理；
     - app.py里新增的status.foxzen.me CORS白名单，需要跟随代码一起部署到
       GreenCloud（走正常的candidate cutover流程）之后，这个页面从浏览器
       发起的跨域读取才会真正被允许——页面上线前必须确认这一步已经完成，
       否则/api/health和/api/refresh/*/status会被浏览器的CORS拦下来。
 """
+import argparse
+import os
+import sys
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "publish_status"
 HOST = "status.foxzen.me"
+
+# 跟generate_status_page.py::publish_update_page()推送用的是同一个机器人
+# 身份/超时值——两边都只是把git_publish.commit_and_push()套一层，保持
+# 提交作者身份统一没有理由用两套值。
+GIT_BOT_NAME = "Foxzen Refresh Bot"
+GIT_BOT_EMAIL = "foxzen-refresh-bot@users.noreply.github.com"
+GIT_PUSH_TIMEOUT_SECONDS = 60
 
 GITHUB_STATUS_PAGE = "https://www.githubstatus.com/"
 CLOUDFLARE_STATUS_PAGE = "https://www.cloudflarestatus.com/"
@@ -46,7 +74,7 @@ CLOUDFLARE_STATUS_PAGE = "https://www.cloudflarestatus.com/"
 # 不care模板里有多少花括号，只精确替换这两个占位符，两个官方状态页URL依然
 # 保持"只在Python常量里写一份"这个单一数据源。
 PAGE_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -54,6 +82,20 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
+  .lang-toggle {
+    position: fixed; top: 12px; right: 12px; z-index: 100;
+    display: inline-block; font-size: 0.85em;
+    background: rgba(255,255,255,0.92); padding: 4px 10px; border-radius: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  }
+  .lang-toggle button {
+    background: none; border: none; padding: 2px 4px; cursor: pointer;
+    color: #999; font-size: 1em; font-family: inherit;
+  }
+  .lang-toggle button.active { color: #1a73e8; font-weight: bold; }
+  @media (max-width: 480px) {
+    .lang-toggle { top: 8px; right: 8px; font-size: 0.75em; padding: 3px 8px; }
+  }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     max-width: 720px;
@@ -118,97 +160,98 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div class="lang-toggle">
+  <button type="button" data-lang-btn="zh" aria-label="切换到中文">中</button> / <button type="button" data-lang-btn="en" aria-label="Switch to English">EN</button>
+</div>
 <h1>FoxZen Status</h1>
-<div class="subtitle">status.foxzen.me &mdash; 现在怎么样 (what's the current state)</div>
+<div class="subtitle">status.foxzen.me &mdash; <span data-i18n="status_subtitle">现在怎么样</span></div>
 
 <div class="browser-note">
-  下面所有检查结果都是在你打开这个页面时，由<strong>你的浏览器</strong>实时发起的，不是某个中心化监控服务器上跑出来的结果——
-  它反映的是"你的设备现在能不能连上"，而不是一个绝对的全局判断。
-  All checks below run live in <strong>your browser</strong> when this page loads. They reflect what your device can currently reach, not a centralized monitoring verdict.
+  <span data-i18n="browser_note_prefix">下面所有检查结果都是在你打开这个页面时，由</span><strong data-i18n="browser_note_strong">你的浏览器</strong><span data-i18n="browser_note_suffix">实时发起的，不是某个中心化监控服务器上跑出来的结果——它反映的是"你的设备现在能不能连上"，而不是一个绝对的全局判断。</span>
 </div>
 
-<p class="cross-link"><a href="https://update.foxzen.me/">View recent updates &rarr;</a></p>
+<p class="cross-link"><a href="https://update.foxzen.me/" data-i18n="view_updates_link">查看最近的更新 →</a></p>
 
-<h2>Foxzen</h2>
+<h2 data-i18n="section_foxzen">Foxzen</h2>
 
 <div class="row" data-role="status-row" id="row-mirror">
   <div class="row-head">
     <span class="name">foxzen.me / mirror.foxzen.me</span>
-    <span class="badge checking">Checking&hellip;</span>
+    <span class="badge checking">检测中…</span>
   </div>
-  <div class="detail">Checking&hellip;</div>
-  <div class="meta"><span class="source">Source: your browser &rarr; mirror.foxzen.me/api/health</span><span class="checked-at"></span></div>
+  <div class="detail">检测中…</div>
+  <div class="meta"><span class="source" data-i18n="source_mirror">来源：你的浏览器 → mirror.foxzen.me/api/health</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-backup">
   <div class="row-head">
     <span class="name">backup.foxzen.me</span>
-    <span class="badge checking">Checking&hellip;</span>
+    <span class="badge checking">检测中…</span>
   </div>
-  <div class="detail">Checking&hellip;</div>
-  <div class="meta"><span class="source">Source: your browser &rarr; backup.foxzen.me/api/health (direct, bypasses Cloudflare)</span><span class="checked-at"></span></div>
+  <div class="detail">检测中…</div>
+  <div class="meta"><span class="source" data-i18n="source_backup">来源：你的浏览器 → backup.foxzen.me/api/health（直连，绕开Cloudflare）</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-github">
   <div class="row-head">
     <span class="name">github.foxzen.me</span>
-    <span class="badge checking">Checking&hellip;</span>
+    <span class="badge checking">检测中…</span>
   </div>
-  <div class="detail">Checking&hellip;</div>
-  <div class="meta"><span class="source">Source: your browser &rarr; mirror.foxzen.me/api/refresh/github/status + github.foxzen.me reachability</span><span class="checked-at"></span></div>
+  <div class="detail">检测中…</div>
+  <div class="meta"><span class="source" data-i18n="source_github">来源：你的浏览器 → mirror.foxzen.me/api/refresh/github/status + github.foxzen.me可达性</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-cf">
   <div class="row-head">
     <span class="name">cf.foxzen.me</span>
-    <span class="badge checking">Checking&hellip;</span>
+    <span class="badge checking">检测中…</span>
   </div>
-  <div class="detail">Checking&hellip;</div>
-  <div class="meta"><span class="source">Source: your browser &rarr; mirror.foxzen.me/api/refresh/cf/status + cf.foxzen.me reachability</span><span class="checked-at"></span></div>
+  <div class="detail">检测中…</div>
+  <div class="meta"><span class="source" data-i18n="source_cf">来源：你的浏览器 → mirror.foxzen.me/api/refresh/cf/status + cf.foxzen.me可达性</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-greencloud">
   <div class="row-head">
-    <span class="name">GreenCloud (server infrastructure)</span>
-    <span class="badge checking">Checking&hellip;</span>
+    <span class="name" data-i18n="name_greencloud">GreenCloud（服务器基础设施）</span>
+    <span class="badge checking">检测中…</span>
   </div>
-  <div class="detail">Checking&hellip;</div>
-  <div class="meta"><span class="source">Derived from the mirror.foxzen.me and backup.foxzen.me checks above</span><span class="checked-at"></span></div>
+  <div class="detail">检测中…</div>
+  <div class="meta"><span class="source" data-i18n="source_greencloud">由上面mirror.foxzen.me和backup.foxzen.me的检测结果推导得出</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-hetzner">
   <div class="row-head">
-    <span class="name">Hetzner (backup storage)</span>
-    <span class="badge unknown">No live check</span>
+    <span class="name" data-i18n="name_hetzner">Hetzner（备份存储）</span>
+    <span class="badge unknown" data-i18n="badge_no_live_check">无实时检测</span>
   </div>
-  <div class="detail">Hetzner在这里只用作长期备份存储，没有可公开访问的健康检查接口，因此这里不提供实时探测结果。Used only for long-term backup storage; it has no public health-check endpoint, so no live probe is shown here.</div>
-  <div class="meta"><span class="source">No data source available</span><span class="checked-at"></span></div>
+  <div class="detail" data-i18n="detail_hetzner">Hetzner在这里只用作长期备份存储，没有可公开访问的健康检查接口，因此这里不提供实时探测结果。</div>
+  <div class="meta"><span class="source" data-i18n="source_none">没有可用的数据来源</span><span class="checked-at"></span></div>
 </div>
 
-<h2>External Platform Status</h2>
+<h2 data-i18n="section_external">External Platform Status</h2>
 
 <div class="row" data-role="status-row" id="row-github-official">
   <div class="row-head">
-    <span class="name">Official GitHub Status</span>
-    <span class="badge checking">Loading&hellip;</span>
+    <span class="name" data-i18n="name_github_official">GitHub 官方状态</span>
+    <span class="badge checking">加载中…</span>
   </div>
-  <div class="detail">Loading&hellip;</div>
-  <a class="official-link" href="__GITHUB_STATUS_PAGE__" target="_blank" rel="noopener">View official GitHub status &rarr;</a>
-  <div class="meta"><span class="source">Source: githubstatus.com (GitHub's own status page)</span><span class="checked-at"></span></div>
+  <div class="detail">加载中…</div>
+  <a class="official-link" href="__GITHUB_STATUS_PAGE__" target="_blank" rel="noopener" data-i18n="link_github_official">查看 GitHub 官方状态页 →</a>
+  <div class="meta"><span class="source" data-i18n="source_github_official">来源：githubstatus.com（GitHub官方状态页）</span><span class="checked-at"></span></div>
 </div>
 
 <div class="row" data-role="status-row" id="row-cloudflare-official">
   <div class="row-head">
-    <span class="name">Official Cloudflare Status</span>
-    <span class="badge checking">Loading&hellip;</span>
+    <span class="name" data-i18n="name_cloudflare_official">Cloudflare 官方状态</span>
+    <span class="badge checking">加载中…</span>
   </div>
-  <div class="detail">Loading&hellip;</div>
-  <a class="official-link" href="__CLOUDFLARE_STATUS_PAGE__" target="_blank" rel="noopener">View official Cloudflare status &rarr;</a>
-  <div class="meta"><span class="source">Source: cloudflarestatus.com (Cloudflare's own status page)</span><span class="checked-at"></span></div>
+  <div class="detail">加载中…</div>
+  <a class="official-link" href="__CLOUDFLARE_STATUS_PAGE__" target="_blank" rel="noopener" data-i18n="link_cloudflare_official">查看 Cloudflare 官方状态页 →</a>
+  <div class="meta"><span class="source" data-i18n="source_cloudflare_official">来源：cloudflarestatus.com（Cloudflare官方状态页）</span><span class="checked-at"></span></div>
 </div>
 
-<footer>
-  This page is a static, read-only status dashboard. It cannot trigger any refresh, sync, or deploy action.
+<footer data-i18n="footer_text">
+  本页是一个静态、只读的状态看板，不能触发任何刷新、同步或发布操作。
 </footer>
 
 <script>
@@ -222,10 +265,151 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   var GITHUB_STATUS_API = "https://www.githubstatus.com/api/v2/summary.json";
   var CLOUDFLARE_STATUS_API = "https://www.cloudflarestatus.com/api/v2/summary.json";
 
+  // 全站UI国际化：跟fetch_blog.py::I18N_BLOCK等其它四份独立实现同一套
+  // localStorage key/检测算法/data-i18n约定，这是第六份独立实现（本页面
+  // 是自包含的单文件，不依赖任何外部JS，见文件头docstring）。
+  //
+  // 范围说明（已在最终报告里披露）：只翻译不会被下面setRow()动态覆盖的
+  // 静态UI文案（标题/副标题/小节标题/来源说明/页脚/官方链接）以及setRow()
+  // 接收到的、来自FoxZen自己代码的固定徽章词（OK/Unreachable/Reported/
+  // Unavailable here等）——checkHealthEndpoint/checkPagesTarget/
+  // checkGreenCloud里拼出来的完整诊断句子（"last sync: ..."、
+  // "reachability: ..."等）本次不做逐句翻译：这些句子由多段条件判断动态
+  // 拼接，逐句模板化的改动量和这个页面的次要程度不成比例，保持英文原样，
+  // 不影响其准确性。r.data.status.description（GitHub/Cloudflare官方状态
+  // API返回的原始文字）任何时候都不翻译/改写。
+  var STATUS_STRINGS = {
+    zh: {
+      status_subtitle: "现在怎么样",
+      browser_note_prefix: "下面所有检查结果都是在你打开这个页面时，由",
+      browser_note_strong: "你的浏览器",
+      browser_note_suffix: "实时发起的，不是某个中心化监控服务器上跑出来的结果——它反映的是“你的设备现在能不能连上”，而不是一个绝对的全局判断。",
+      view_updates_link: "查看最近的更新 →",
+      section_foxzen: "Foxzen",
+      section_external: "External Platform Status",
+      name_greencloud: "GreenCloud（服务器基础设施）",
+      name_hetzner: "Hetzner（备份存储）",
+      name_github_official: "GitHub 官方状态",
+      name_cloudflare_official: "Cloudflare 官方状态",
+      badge_no_live_check: "无实时检测",
+      detail_hetzner: "Hetzner在这里只用作长期备份存储，没有可公开访问的健康检查接口，因此这里不提供实时探测结果。",
+      source_mirror: "来源：你的浏览器 → mirror.foxzen.me/api/health",
+      source_backup: "来源：你的浏览器 → backup.foxzen.me/api/health（直连，绕开Cloudflare）",
+      source_github: "来源：你的浏览器 → mirror.foxzen.me/api/refresh/github/status + github.foxzen.me可达性",
+      source_cf: "来源：你的浏览器 → mirror.foxzen.me/api/refresh/cf/status + cf.foxzen.me可达性",
+      source_greencloud: "由上面mirror.foxzen.me和backup.foxzen.me的检测结果推导得出",
+      source_none: "没有可用的数据来源",
+      source_github_official: "来源：githubstatus.com（GitHub官方状态页）",
+      source_cloudflare_official: "来源：cloudflarestatus.com（Cloudflare官方状态页）",
+      link_github_official: "查看 GitHub 官方状态页 →",
+      link_cloudflare_official: "查看 Cloudflare 官方状态页 →",
+      footer_text: "本页是一个静态、只读的状态看板，不能触发任何刷新、同步或发布操作。",
+      badge_ok: "正常",
+      badge_unreachable: "无法访问",
+      badge_reported: "已报告",
+      badge_unavailable_here: "此处不可用",
+      checked_at_prefix: "检测时间 ",
+    },
+    en: {
+      status_subtitle: "what's the current state",
+      browser_note_prefix: "All checks below run live in ",
+      browser_note_strong: "your browser",
+      browser_note_suffix: " when this page loads. They reflect what your device can currently reach, not a centralized monitoring verdict.",
+      view_updates_link: "View recent updates →",
+      section_foxzen: "Foxzen",
+      section_external: "External Platform Status",
+      name_greencloud: "GreenCloud (server infrastructure)",
+      name_hetzner: "Hetzner (backup storage)",
+      name_github_official: "Official GitHub Status",
+      name_cloudflare_official: "Official Cloudflare Status",
+      badge_no_live_check: "No live check",
+      detail_hetzner: "Used only for long-term backup storage; it has no public health-check endpoint, so no live probe is shown here.",
+      source_mirror: "Source: your browser → mirror.foxzen.me/api/health",
+      source_backup: "Source: your browser → backup.foxzen.me/api/health (direct, bypasses Cloudflare)",
+      source_github: "Source: your browser → mirror.foxzen.me/api/refresh/github/status + github.foxzen.me reachability",
+      source_cf: "Source: your browser → mirror.foxzen.me/api/refresh/cf/status + cf.foxzen.me reachability",
+      source_greencloud: "Derived from the mirror.foxzen.me and backup.foxzen.me checks above",
+      source_none: "No data source available",
+      source_github_official: "Source: githubstatus.com (GitHub's own status page)",
+      source_cloudflare_official: "Source: cloudflarestatus.com (Cloudflare's own status page)",
+      link_github_official: "View official GitHub status →",
+      link_cloudflare_official: "View official Cloudflare status →",
+      footer_text: "This page is a static, read-only status dashboard. It cannot trigger any refresh, sync, or deploy action.",
+      badge_ok: "OK",
+      badge_unreachable: "Unreachable",
+      badge_reported: "Reported",
+      badge_unavailable_here: "Unavailable here",
+      checked_at_prefix: "Checked at ",
+    },
+  };
+
+  var FOXZEN_LANG_KEY = "foxzen_lang";
+
+  function detectDefaultFoxzenLang() {
+    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+    for (var i = 0; i < langs.length; i++) {
+      if (/^zh/i.test(langs[i])) return "zh";
+    }
+    return "en";
+  }
+
+  function getFoxzenLang() {
+    try {
+      var saved = localStorage.getItem(FOXZEN_LANG_KEY);
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    return detectDefaultFoxzenLang();
+  }
+
+  var FOXZEN_LANG = getFoxzenLang();
+
+  function statusT(key) {
+    var dict = STATUS_STRINGS[FOXZEN_LANG] || STATUS_STRINGS.en;
+    return dict[key];
+  }
+
+  function applyStatusI18n() {
+    var dict = STATUS_STRINGS[FOXZEN_LANG] || STATUS_STRINGS.en;
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-i18n");
+      if (typeof dict[key] === "string") nodes[i].textContent = dict[key];
+    }
+    document.documentElement.setAttribute("lang", FOXZEN_LANG === "zh" ? "zh-CN" : "en");
+    var btns = document.querySelectorAll("[data-lang-btn]");
+    for (var j = 0; j < btns.length; j++) {
+      if (btns[j].getAttribute("data-lang-btn") === FOXZEN_LANG) btns[j].classList.add("active");
+      else btns[j].classList.remove("active");
+    }
+  }
+
+  function setFoxzenLang(lang) {
+    if (lang !== "zh" && lang !== "en") return;
+    FOXZEN_LANG = lang;
+    try { localStorage.setItem(FOXZEN_LANG_KEY, lang); } catch (e) {}
+    applyStatusI18n();
+  }
+
+  function wireLangToggle() {
+    var btns = document.querySelectorAll("[data-lang-btn]");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener("click", function (e) {
+        setFoxzenLang(e.currentTarget.getAttribute("data-lang-btn"));
+      });
+    }
+  }
+
   function refreshStatusUrl(target) {
     return "https://mirror.foxzen.me/api/refresh/" + target + "/status";
   }
 
+  // badgeText/detailText由各check*函数拼好传入——只有badgeText在下面几个
+  // 调用点传入的是FoxZen自己代码写死的固定英文词（OK/Unreachable等）时才
+  // 值得做语言相关处理，那几个调用点已经直接改成传statusT(...)对应的当前
+  // 语言文案（见checkHealthEndpoint/checkPagesTarget/checkGreenCloud/
+  // checkOfficialStatus），这里的setRow()本身保持"传什么就显示什么"，
+  // 不在这一层做任何字符串判断/替换——避免不小心把第三方状态API返回的
+  // 原始文字(r.data.status.description)也当成"已知词"错误替换掉。
   function setRow(id, state, badgeText, detailText) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -235,7 +419,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     badge.className = "badge " + state;
     badge.textContent = badgeText;
     detail.textContent = detailText;
-    if (checkedAt) checkedAt.textContent = "Checked at " + new Date().toLocaleTimeString();
+    if (checkedAt) checkedAt.textContent = statusT("checked_at_prefix") + new Date().toLocaleTimeString();
   }
 
   function withTimeout(promise, ms) {
@@ -292,14 +476,14 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
       if (r.ok && r.data) {
         var d = r.data;
         var visits = d.visit_stats && typeof d.visit_stats.today === "number" ? d.visit_stats.today : "unknown";
-        setRow(rowId, "ok", "OK",
+        setRow(rowId, "ok", statusT("badge_ok"),
           "posts: " + (d.post_count != null ? d.post_count : "unknown") +
           " · visits today: " + visits +
           " · disk used: " + fmtPercent(d.disk_usage_ratio));
         return true;
       }
       var reason = r.httpStatus ? ("HTTP " + r.httpStatus) : "network error / timeout, checked from your browser";
-      setRow(rowId, "fail", "Unreachable", sourceLabel + " did not return a healthy response (" + reason + ").");
+      setRow(rowId, "fail", statusT("badge_unreachable"), sourceLabel + " did not return a healthy response (" + reason + ").");
       return false;
     });
   }
@@ -323,7 +507,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
       }
       parts.push(pageName + " reachability: " + (reachable ? "OK (browser received a response)" : "failed (network error, from your browser)"));
       var state = reachable ? "ok" : "fail";
-      setRow(rowId, state, reachable ? "OK" : "Unreachable", parts.join(" · "));
+      setRow(rowId, state, reachable ? statusT("badge_ok") : statusT("badge_unreachable"), parts.join(" · "));
       return reachable;
     });
   }
@@ -333,15 +517,15 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
       var mirrorOk = results[0];
       var backupOk = results[1];
       if (mirrorOk && backupOk) {
-        setRow("row-greencloud", "ok", "OK", "Reachable via both mirror.foxzen.me and backup.foxzen.me.");
+        setRow("row-greencloud", "ok", statusT("badge_ok"), "Reachable via both mirror.foxzen.me and backup.foxzen.me.");
       } else if (mirrorOk && !backupOk) {
-        setRow("row-greencloud", "ok", "OK", "Reachable via mirror.foxzen.me. backup.foxzen.me path failed (see above).");
+        setRow("row-greencloud", "ok", statusT("badge_ok"), "Reachable via mirror.foxzen.me. backup.foxzen.me path failed (see above).");
       } else if (!mirrorOk && backupOk) {
-        setRow("row-greencloud", "ok", "OK",
+        setRow("row-greencloud", "ok", statusT("badge_ok"),
           "Reachable via backup.foxzen.me. mirror.foxzen.me path failed — since backup.foxzen.me bypasses Cloudflare, " +
           "this can mean the issue is on the Cloudflare side rather than GreenCloud itself.");
       } else {
-        setRow("row-greencloud", "fail", "Unreachable", "Both mirror.foxzen.me and backup.foxzen.me checks failed from your browser.");
+        setRow("row-greencloud", "fail", statusT("badge_unreachable"), "Both mirror.foxzen.me and backup.foxzen.me checks failed from your browser.");
       }
     });
   }
@@ -349,16 +533,22 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   function checkOfficialStatus(rowId, apiUrl) {
     fetchJSON(apiUrl, 8000).then(function (r) {
       if (r.ok && r.data && r.data.status) {
-        setRow(rowId, "ok", r.data.status.description || "Reported",
+        // r.data.status.description是GitHub/Cloudflare官方状态API返回的原始
+        // 文字，不属于本次UI国际化的翻译对象（同一条规则贯穿整个status/
+        // update页面：数据来源原文永远保持原样，只翻译UI标签），只在它缺失
+        // 时才退回下面按语言翻译过的statusT("badge_reported")兜底文案。
+        setRow(rowId, "ok", r.data.status.description || statusT("badge_reported"),
           "Live from the official status API: " + (r.data.status.description || "see link below") + ".");
       } else {
-        setRow(rowId, "unknown", "Unavailable here",
+        setRow(rowId, "unknown", statusT("badge_unavailable_here"),
           "Could not load the live official status feed from your browser. Use the official link below — it is always authoritative.");
       }
     });
   }
 
   function main() {
+    applyStatusI18n();
+    wireLangToggle();
     var mirrorOk = checkHealthEndpoint("row-mirror", MIRROR_HEALTH_URL, "mirror.foxzen.me");
     var backupOk = checkHealthEndpoint("row-backup", BACKUP_HEALTH_URL, "backup.foxzen.me");
     checkGreenCloud(mirrorOk, backupOk);
@@ -455,10 +645,65 @@ def verify_status_page(output_dir: Path) -> None:
         raise StatusPageVerificationError("；".join(errors))
 
 
-def main():
-    output_dir = build_status_page()
+def publish_status_page(repo_dir: Path) -> dict:
+    """生成+校验status页面，然后commit+push到repo_dir这个独立的卫星仓库
+    （例如GitHub Pages专用的foxzen-status仓库的本地checkout路径）。
+
+    跟generate_status_page.py::publish_update_page()同一个"build->
+    git_publish.commit_and_push()"模式，但这个页面从设计起就没有"作为
+    foxzen-blog自己的子目录被提交"这个场景（publish_status/在.gitignore
+    里，从不打算进foxzen-blog自己的git历史）——repo_dir就是output_dir
+    本身，commit的subpath固定是"."，不需要额外的PUBLISH_SUBPATH参数，
+    也不像update那边保留"不传repo_dir时退回到BASE_DIR"的旧行为。
+
+    repo_dir必须是一个已经clone好、能fast-forward push到origin/master的
+    独立git仓库（不是foxzen-blog自己），且默认分支必须是"master"（见
+    git_publish.py的B3检查）。push认证读环境变量GITHUB_TOKEN（跟app.py/
+    generate_status_page.py同一个约定）。
+
+    返回git_publish.commit_and_push()的原始返回值，不吞掉任何已经分类好
+    的错误信息；GITHUB_TOKEN未设置时返回结构相同的credentials_missing
+    错误，不抛异常。
+    """
+    output_dir = build_status_page(repo_dir)
     verify_status_page(output_dir)
-    print(f"已生成并通过安全检查 {output_dir}（host={HOST}）")
+
+    push_token = os.environ.get("GITHUB_TOKEN", "")
+    if not push_token:
+        return {"pushed": False, "error_category": "credentials_missing",
+                "detail": "环境变量GITHUB_TOKEN未设置，无法推送。"}
+
+    import git_publish
+    commit_message = f"更新状态页面外壳 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
+    return git_publish.commit_and_push(
+        repo_dir, ".", GIT_BOT_NAME, GIT_BOT_EMAIL,
+        commit_message, push_token, GIT_PUSH_TIMEOUT_SECONDS,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="生成（可选：发布）status.foxzen.me的静态外壳页")
+    parser.add_argument(
+        "--publish", metavar="REPO_DIR", type=Path, default=None,
+        help="生成后立即commit+push到指定的独立卫星仓库目录(比如GitHub Pages"
+             "专用的foxzen-status仓库的本地checkout路径)，复用git_publish.py，"
+             "需要环境变量GITHUB_TOKEN。不加这个参数时只在本地生成"
+             "publish_status/，不做任何git操作。",
+    )
+    args = parser.parse_args()
+
+    if args.publish is None:
+        output_dir = build_status_page()
+        verify_status_page(output_dir)
+        print(f"已生成并通过安全检查 {output_dir}（host={HOST}）")
+        return
+
+    result = publish_status_page(args.publish)
+    if result["pushed"]:
+        print(f"已生成并推送，commit={result['commit_sha']}，push_state={result['push_state']}。")
+    else:
+        print(f"生成成功但推送失败（{result['error_category']}）: {result['detail']}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

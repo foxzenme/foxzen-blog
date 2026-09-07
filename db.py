@@ -239,6 +239,19 @@ def init_db():
             conn.execute(f"ALTER TABLE refresh_targets ADD COLUMN {col} {coltype}")
             print(f"[迁移] refresh_targets表已添加 {col} 字段")
 
+    # 预先为4个target各建一行，不依赖"第一次调用try_acquire_lock()时传
+    # target_key/cooldown_seconds"这个既有的惰性创建路径（INSERT INTO
+    # refresh_targets ... ON CONFLICT，见try_acquire_lock()）。单次热更新
+    # 自动发布fan-out（app.py::_start_publish_fan_out()）调用
+    # _run_git_publish(target_cooldown=False)时故意不传target_key/
+    # cooldown_seconds（原因见该函数文档字符串），如果github/cf在生产
+    # 环境从未被手动点击过，这两行就永远不会被惰性创建，之后
+    # record_target_result()对不存在的行执行UPDATE会静默影响0行——fan-out
+    # 的结果会被无声丢弃，且没有任何报错提示。INSERT OR IGNORE按
+    # target_key主键去重，不会覆盖已经存在的历史记录。
+    for _target_key in ("mirror", "backup", "github", "cf"):
+        conn.execute("INSERT OR IGNORE INTO refresh_targets (target_key) VALUES (?)", (_target_key,))
+
     conn.commit()
     conn.close()
 

@@ -328,7 +328,7 @@ def _run_content_fetch(target_key: str) -> dict:
             "target_generation": acquire["target_generation"]}
 
 
-def _run_git_publish(target_key: str) -> dict:
+def _run_git_publish(target_key: str, *, target_cooldown: bool = False) -> dict:
     """github/cf共用的第二阶段：原子获取git_publish锁（同样检查content_fetch
     是否idle）-> 校验分支/仓库状态(B3) -> 检测html/实际变化 -> 只有真的有
     变化才commit（O-2：没有变化绝不产生空commit）-> 无论本轮是否有变化都
@@ -336,26 +336,52 @@ def _run_git_publish(target_key: str) -> dict:
     commit成功但push失败，会在本地留下一个从未真正推送的commit，必须
     在下一次调用时继续补上，不能被静默当作"无变化"而永远遗漏）。
 
+    target_cooldown（单次热更新自动发布fan-out引入）：
+      False（默认，供_start_publish_fan_out()内部调用）：不检查/不推进
+        这个target自己在refresh_targets里的冷却与generation，只做纯
+        资源互斥。这是刻意的：github/cf不再各自调用_run_content_fetch()
+        （见refresh_target()），如果fan-out的这次调用也去推进
+        refresh_targets.last_started_at，会导致fan-out发布失败后，用户
+        立刻手动点"同步cf"重试时被自己的5分钟冷却卡住——直接违反"下一次
+        可以只重试Cloudflare，不需要等冷却"这条要求。代价：fan-out触发的
+        这次发布不占用target级别的fencing token（下面target_generation
+        为None），极窄窗口下（fan-out的后台GitHub Actions watcher还没
+        写完结果，期间又发生一次手动点击）理论上可能被旧结果覆盖新结果
+        ——这是已知、如实披露的低概率限制，跟
+        _watch_github_run_in_background()文档字符串里披露的"gunicorn
+        worker重启会丢失后台跟踪"是同一类型的取舍，不是被忽略的问题。
+      True（供手动POST /api/refresh/github|cf调用）：把target_key/
+        cooldown_seconds传给底层try_acquire_lock()——github/cf不再有
+        content_fetch阶段替它们设置冷却，这个匿名公开端点必须自己在
+        git_publish这一步申请，否则会失去限流保护。
+
     返回：
-      {"acquired": False, "reason": "busy_content_fetch" | "busy_git_publish"}
+      {"acquired": False, "reason": "busy_content_fetch" | "busy_git_publish" | "cooldown",
+       "cooldown_remaining_seconds": int}  # 仅cooldown时有这个字段
       {"acquired": True, "pushed": True, "commit_sha": str | None,
-       "changed_file_count": int, "push_state": "noop" | "pushed"}
-      {"acquired": True, "pushed": False, "error_category": str, "detail": str}
+       "changed_file_count": int, "push_state": "noop" | "pushed",
+       "target_generation": int | None}
+      {"acquired": True, "pushed": False, "error_category": str, "detail": str,
+       "target_generation": int | None}
         错误分类详见git_publish.commit_and_push()的文档字符串（B1/B2/B3
         引入了wrong_branch/repository_busy/repository_state_error/
-        remote_diverged几种新类别）。
+        remote_diverged几种新类别）。target_generation仅target_cooldown=True
+        时非None，供调用方原样传给record_target_result()的expected_generation。
     """
     if not GITHUB_TOKEN:
         return {"acquired": True, "pushed": False, "error_category": "credentials_missing",
-                "detail": "服务器未配置GITHUB_TOKEN，无法推送"}
+                "detail": "服务器未配置GITHUB_TOKEN，无法推送", "target_generation": None}
 
     acquire = db.try_acquire_lock(
         GIT_PUBLISH_LOCK, GIT_PUBLISH_STALE_SECONDS,
+        target_key=(target_key if target_cooldown else None),
+        cooldown_seconds=(REFRESH_COOLDOWN_SECONDS if target_cooldown else None),
         cross_check_idle=((CONTENT_FETCH_LOCK, CONTENT_FETCH_STALE_SECONDS),),
         triggered_by=target_key,
     )
     if not acquire["acquired"]:
         return acquire
+    target_generation = acquire.get("target_generation")
 
     commit_message = f"content sync via {target_key} refresh"
     status, detail = "error", "未知错误"
@@ -380,7 +406,7 @@ def _run_git_publish(target_key: str) -> dict:
             commit_sha=(push_result.get("commit_sha") if push_result.get("pushed") else None),
         )
 
-    return {"acquired": True, **push_result}
+    return {"acquired": True, "target_generation": target_generation, **push_result}
 
 
 def _rejection_response(target: str, outcome: dict):
@@ -457,60 +483,56 @@ def _watch_github_run_in_background(target_key, run_id, run_html_url, commit_sha
     threading.Thread(target=_watch, daemon=True, name=f"github-actions-watch-{run_id}").start()
 
 
-@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>", methods=["POST"])
-def refresh_target(target):
-    fetch_outcome = _run_content_fetch(target)
-    if not fetch_outcome["acquired"]:
-        return _rejection_response(target, fetch_outcome)
+def _publish_and_report(target_key: str, *, target_cooldown: bool) -> dict:
+    """github/cf共用的发布阶段：申请git_publish锁 -> commit+push ->
+    （github专属）workflow_dispatch+有界轮询 -> 写回refresh_targets结果。
 
-    # 派发这一轮刷新时target自己的fencing token，后续所有record_target_result()
-    # 调用都带上它，作为"这次写入是否仍对应当前这一轮"的依据（见
-    # db.record_target_result()的expected_generation参数说明——用严格
-    # 递增的整数而不是时间戳，因为秒级精度的时间戳在cooldown_seconds=0
-    # 等场景下可能同一秒内重复，不能可靠地分辨"是不是同一轮"）。
-    expected_generation = fetch_outcome["target_generation"]
+    从原本内联在refresh_target()里的逻辑抽出来，好让手动路由处理函数
+    （target_cooldown=True）和mirror成功后的自动发布fan-out线程
+    （target_cooldown=False，见_start_publish_fan_out()）共用同一份代码，
+    不是两份平行维护的实现。
 
-    if target in ("mirror", "backup"):
-        status = "success" if fetch_outcome["status"] == "ok" else "failure"
-        error_category = None if status == "success" else "content_fetch_error"
-        db.record_target_result(target, status, fetch_outcome["detail"], error_category=error_category,
-                                 retry_recommended=(True if status == "failure" else None),
-                                 expected_generation=expected_generation)
-        # S8修复：fetch_outcome["detail"]是fetch_blog.py子进程的原始stdout/
-        # stderr（供上面record_target_result()内部存档诊断用），这个接口
-        # 匿名公开，对外detail必须换成safe_errors的固定模板，不能把原始
-        # 输出直接返回。
-        return jsonify({
-            "target": target, "status": status,
-            "detail": safe_errors.safe_public_detail(status, error_category),
-            "post_count": fetch_outcome["post_count"], "commit": None,
-        }), 200
-
-    # target in ("github", "cf")：两阶段。content_fetch失败/超时直接结束，
-    # 不进入git_publish阶段——没有新内容，不应该去发布。
-    if fetch_outcome["status"] != "ok":
-        db.record_target_result(target, "failure", fetch_outcome["detail"],
-                                 error_category="content_fetch_error", retry_recommended=True,
-                                 expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": "content_fetch_error",
-            "detail": safe_errors.safe_public_detail("failure", "content_fetch_error"),
-            "retry_recommended": True, "cooldown_applied": True,
-        }), 200
-
-    publish_outcome = _run_git_publish(target)
+    刻意不直接调用jsonify()/返回Flask Response：fan-out运行在没有请求
+    上下文的后台daemon线程里，jsonify()在那种上下文下会直接抛
+    RuntimeError（"Working outside of application context"）。这里统一
+    返回{"http_status": int, "body": dict}，HTTP路由处理函数自己再包一层
+    jsonify(result["body"]), result["http_status"]；fan-out线程只需要
+    body里的status字段判断成败，不关心http_status。
+    """
+    publish_outcome = _run_git_publish(target_key, target_cooldown=target_cooldown)
     if not publish_outcome["acquired"]:
-        return _rejection_response(target, publish_outcome)
+        reason = publish_outcome["reason"]
+        if reason == "cooldown":
+            return {"http_status": 429, "body": {
+                "target": target_key, "status": "cooldown",
+                "cooldown_remaining_seconds": publish_outcome["cooldown_remaining_seconds"],
+            }}
+        # busy_content_fetch / busy_git_publish：明确告诉调用方是哪一个
+        # 内部资源正忙，而不是笼统的"running"——避免用户以为是自己这个
+        # target卡住了。跟_rejection_response()是同一份措辞，这里没有
+        # 直接复用它，是因为_rejection_response()内部调用jsonify()，同样
+        # 不能在fan-out的后台线程里使用。
+        busy_label = "内容抓取（content_fetch）" if reason == "busy_content_fetch" else "Git 发布（git_publish）"
+        return {"http_status": 409, "body": {
+            "target": target_key, "status": "busy", "reason": reason,
+            "detail": f"{busy_label} 正在被另一个刷新任务占用，请稍后重试",
+        }}
+
+    # target_cooldown=True时才有真正的fencing token；fan-out（False）传
+    # 给下面所有record_target_result()调用的都是None，即"无条件写入"
+    # ——原因见_run_git_publish()文档字符串。
+    expected_generation = publish_outcome.get("target_generation")
+
     if not publish_outcome["pushed"]:
         retry = publish_outcome["error_category"] not in _NON_RETRYABLE_GIT_ERROR_CATEGORIES
-        db.record_target_result(target, "failure", publish_outcome["detail"],
+        db.record_target_result(target_key, "failure", publish_outcome["detail"],
                                  error_category=publish_outcome["error_category"], retry_recommended=retry,
                                  expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": publish_outcome["error_category"],
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "failure", "error_category": publish_outcome["error_category"],
             "detail": safe_errors.safe_public_detail("failure", publish_outcome["error_category"]),
-            "retry_recommended": retry, "cooldown_applied": True,
-        }), 200
+            "retry_recommended": retry, "cooldown_applied": target_cooldown,
+        }}
 
     commit_sha = publish_outcome["commit_sha"]
     changed = publish_outcome["changed_file_count"]
@@ -524,35 +546,39 @@ def refresh_target(target):
     # 成功），不能因为changed==0就跳过——那正是B2要修的"push失败被永久
     # 静默掩盖成成功"问题的另一面：如果只看changed就跳过，这次真正发生的
     # push会被完全隐瞒，github也不会为这批终于推送出去的内容触发部署。
+    # 这也是单次热更新fan-out天然只产生一个commit的原因：github先跑完
+    # commit_and_push()真的commit+push了之后，紧接着cf那一步检测到html/
+    # 已经没有可提交的变化，直接落进这个noop分支——不需要任何额外的
+    # "只让第一个target真正提交"判断逻辑。
     if push_state == "noop":
         detail = "内容无变化，未产生新提交，未触发重新部署"
-        db.record_target_result(target, "success", detail, commit_sha=commit_sha,
+        db.record_target_result(target_key, "success", detail, commit_sha=commit_sha,
                                  expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "success", "commit": commit_sha,
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "success", "commit": commit_sha,
             "changed_file_count": 0, "detail": detail,
-        }), 200
+        }}
 
-    if target == "cf":
+    if target_key == "cf":
         # 没有真正查询Cloudflare部署状态，success只能代表push成功、已经
         # 移交给Cloudflare Pages的Git Integration，不能声称部署已完成。
         detail = "git push successful; handed off to Cloudflare Pages（未查询实际部署状态）"
-        db.record_target_result(target, "success", detail, commit_sha=commit_sha,
+        db.record_target_result(target_key, "success", detail, commit_sha=commit_sha,
                                  expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "success", "commit": commit_sha,
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "success", "commit": commit_sha,
             "changed_file_count": changed, "detail": detail,
-        }), 200
+        }}
 
-    # target == "github"：workflow_dispatch + 有界轮询真实conclusion
+    # target_key == "github"：workflow_dispatch + 有界轮询真实conclusion
     if not GITHUB_TOKEN:
-        db.record_target_result(target, "failure", "服务器未配置GITHUB_TOKEN",
+        db.record_target_result(target_key, "failure", "服务器未配置GITHUB_TOKEN",
                                  error_category="credentials_missing", retry_recommended=False,
                                  expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": "credentials_missing",
-            "detail": "服务器未配置GitHub凭据", "retry_recommended": False, "cooldown_applied": True,
-        }), 200
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "failure", "error_category": "credentials_missing",
+            "detail": "服务器未配置GitHub凭据", "retry_recommended": False, "cooldown_applied": target_cooldown,
+        }}
 
     try:
         gh_result = github_actions.trigger_and_wait(
@@ -561,53 +587,53 @@ def refresh_target(target):
         )
 
         if gh_result["outcome"] == "success":
-            db.record_target_result(target, "success", "", commit_sha=commit_sha,
+            db.record_target_result(target_key, "success", "", commit_sha=commit_sha,
                                      expected_generation=expected_generation)
-            return jsonify({
-                "target": target, "status": "success", "commit": commit_sha, "changed_file_count": changed,
+            return {"http_status": 200, "body": {
+                "target": target_key, "status": "success", "commit": commit_sha, "changed_file_count": changed,
                 "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"], "detail": "",
-            }), 200
+            }}
 
         if gh_result["outcome"] == "timeout":
             # 有界等待到期，conclusion尚未产出：不是"没人关心了"，启动后台
             # 线程继续跟踪真实结论（见_watch_github_run_in_background()），
-            # HTTP响应本身如实返回running+真实run_id/URL，绝不假装success。
-            _watch_github_run_in_background(target, gh_result["run_id"], gh_result["run_html_url"],
+            # 这里如实返回running+真实run_id/URL，绝不假装success。
+            _watch_github_run_in_background(target_key, gh_result["run_id"], gh_result["run_html_url"],
                                              commit_sha, expected_generation)
-            return jsonify({
-                "target": target, "status": "running", "commit": commit_sha,
+            return {"http_status": 202, "body": {
+                "target": target_key, "status": "running", "commit": commit_sha,
                 "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"],
                 "detail": "内容已推送，Actions已触发，结论尚未产出，已转入后台继续跟踪，"
                           "请稍后查询状态或直接查看Actions页面",
-            }), 202
+            }}
 
         # outcome == "failure"：真实conclusion。conclusion本身取值是GitHub
         # 文档化的固定小枚举（success/failure/cancelled/timed_out/...），
         # 不是任意文本，但S8要求对外detail一律走固定模板——真实conclusion
         # 仍然完整写进下面record_target_result()的内部存档，需要区分具体
         # 是哪种conclusion时，运维可以直接查refresh_targets这一行。
-        db.record_target_result(target, "failure", f"GitHub Actions run 结论为 {gh_result['conclusion']}",
+        db.record_target_result(target_key, "failure", f"GitHub Actions run 结论为 {gh_result['conclusion']}",
                                  error_category="actions_run_failed", retry_recommended=True,
                                  commit_sha=commit_sha, expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": "actions_run_failed",
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "failure", "error_category": "actions_run_failed",
             "detail": safe_errors.safe_public_detail("failure", "actions_run_failed"),
             "run_id": gh_result["run_id"], "run_html_url": gh_result["run_html_url"],
-            "retry_recommended": True, "cooldown_applied": True,
-        }), 200
+            "retry_recommended": True, "cooldown_applied": target_cooldown,
+        }}
 
     except github_actions.GitHubActionsError as e:
         # e.detail可能包含反复重试后最后一次的原始异常文本（github_actions.py
         # 内部已经redact过token，但可能还带着其它诊断细节，比如URL片段），
         # 内部存档保留原样，对外detail同样必须走safe_errors的固定模板。
-        db.record_target_result(target, "failure", e.detail, error_category=e.error_category,
+        db.record_target_result(target_key, "failure", e.detail, error_category=e.error_category,
                                  retry_recommended=True, commit_sha=commit_sha,
                                  expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": e.error_category,
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "failure", "error_category": e.error_category,
             "detail": safe_errors.safe_public_detail("failure", e.error_category),
-            "retry_recommended": True, "cooldown_applied": True,
-        }), 200
+            "retry_recommended": True, "cooldown_applied": target_cooldown,
+        }}
     except Exception as e:
         # S4防御性兜底：github_actions.py内部已经把已知的HTTP/网络异常都
         # 转成了上面这个专门分支能处理的GitHubActionsError，这里只是防止
@@ -617,16 +643,103 @@ def refresh_target(target):
         # refresh_targets会永远停留在上一轮的旧状态，无从得知这次push
         # 其实已经成功。
         db.record_target_result(
-            target, "failure",
+            target_key, "failure",
             safe_errors.redact_known_secrets(f"处理GitHub Actions结果时发生未预期异常: {e}", GITHUB_TOKEN),
             error_category="internal_error", retry_recommended=True,
             commit_sha=commit_sha, expected_generation=expected_generation)
-        return jsonify({
-            "target": target, "status": "failure", "error_category": "internal_error",
+        return {"http_status": 200, "body": {
+            "target": target_key, "status": "failure", "error_category": "internal_error",
             "detail": f"处理GitHub Actions结果时发生未预期异常，内容已经push成功(commit={commit_sha})，"
                       f"请查看Actions页面或稍后重试",
-            "retry_recommended": True, "cooldown_applied": True,
-        }), 200
+            "retry_recommended": True, "cooldown_applied": target_cooldown,
+        }}
+
+
+def _start_publish_fan_out():
+    """mirror单次热更新成功后，在后台daemon线程里依次把GreenCloud刚生成
+    的html/发布到github、Cloudflare——不阻塞这次mirror请求本身的响应
+    （github的workflow_dispatch+轮询最多可能占用到GITHUB_ACTIONS_WAIT_
+    SECONDS=90秒，不应该让"点mirror"这个动作等这么久）。
+
+    这是【GreenCloud单次热更新 -> GitHub+Cloudflare自动同步】架构的核心：
+    Blogger -> mirror的一次content_fetch -> 这里自动把同一份html/分别
+    publish给github/cf，用户不需要再分别点"同步GitHub"/"同步Cloudflare"。
+
+    顺序调用而不是各起一个线程并发调用：github/cf共享同一把
+    GIT_PUBLISH_LOCK（db.py schema注释里写明的既有设计），并发调用会
+    让后发起的那个把先发起的误判成busy_git_publish，自己跟自己抢锁没有
+    意义。github失败不影响cf、cf失败不影响github：两者的
+    record_target_result()调用相互独立，这个函数本身不做任何"看到一个
+    失败就跳过另一个"的判断——每个target的结果只体现在它自己的
+    refresh_targets行里，通过GET /api/refresh/<github|cf>/status查询；
+    这次响应体本身不内联返回fan-out结果（异步，此时还没跑完）。
+
+    每一步都用target_cooldown=False调用_publish_and_report()——不触碰
+    github/cf各自的冷却/generation，原因见_run_git_publish()文档字符串：
+    这样github自动成功、cf自动失败之后，用户手动点"同步cf"重试时不会被
+    一个自己都不知道发生过的自动尝试挡上5分钟冷却。
+
+    fire-and-forget：不重试、不发Telegram通知（沿用这个匿名刷新系统
+    "结果本来就不主动通知，靠/status查询"的既有约定，见
+    cron_refresh_mirror.py文档字符串）。daemon线程内部异常兜底成日志
+    打印，不能让一个未预期异常悄无声息地终止——即使线程异常退出本身不
+    影响gunicorn主进程，也必须留痕（CLAUDE.md"绝不静默except: pass"）。
+    """
+    def _run():
+        for target_key in ("github", "cf"):
+            try:
+                _publish_and_report(target_key, target_cooldown=False)
+            except Exception as e:
+                print(f"[fan-out] 自动发布到{target_key}时发生未预期异常: "
+                      f"{safe_errors.redact_known_secrets(str(e), GITHUB_TOKEN)}")
+
+    threading.Thread(target=_run, daemon=True, name="publish-fan-out").start()
+
+
+@app.route(f"/api/refresh/<any({REFRESH_TARGET_CONVERTER}):target>", methods=["POST"])
+def refresh_target(target):
+    if target in ("github", "cf"):
+        # 不再经过_run_content_fetch()：GreenCloud的html/由mirror的单次
+        # 热更新维护，github/cf只负责把GreenCloud当前已有的html/发布
+        # 出去（见_run_git_publish()文档字符串），不再各自独立抓取
+        # Blogger——避免"点一次同步，重复抓三次Blogger"。target_cooldown=
+        # True：这仍然是公开匿名端点，手动点击需要自己的5分钟冷却保护，
+        # 只是冷却基准从content_fetch阶段挪到了这里（git_publish阶段）。
+        result = _publish_and_report(target, target_cooldown=True)
+        return jsonify(result["body"]), result["http_status"]
+
+    fetch_outcome = _run_content_fetch(target)
+    if not fetch_outcome["acquired"]:
+        return _rejection_response(target, fetch_outcome)
+
+    # 派发这一轮刷新时target自己的fencing token，后续所有record_target_result()
+    # 调用都带上它，作为"这次写入是否仍对应当前这一轮"的依据（见
+    # db.record_target_result()的expected_generation参数说明——用严格
+    # 递增的整数而不是时间戳，因为秒级精度的时间戳在cooldown_seconds=0
+    # 等场景下可能同一秒内重复，不能可靠地分辨"是不是同一轮"）。
+    expected_generation = fetch_outcome["target_generation"]
+
+    status = "success" if fetch_outcome["status"] == "ok" else "failure"
+    error_category = None if status == "success" else "content_fetch_error"
+    db.record_target_result(target, status, fetch_outcome["detail"], error_category=error_category,
+                             retry_recommended=(True if status == "failure" else None),
+                             expected_generation=expected_generation)
+
+    if target == "mirror" and status == "success":
+        # 单次热更新自动扩散到github/cf——只有mirror触发扩散，backup不
+        # 参与（backup.foxzen.me是独立的灾备直连入口，不是这次架构目标
+        # 图里"Blogger->GreenCloud->GitHub repo"这条链路的一部分）。
+        _start_publish_fan_out()
+
+    # S8修复：fetch_outcome["detail"]是fetch_blog.py子进程的原始stdout/
+    # stderr（供上面record_target_result()内部存档诊断用），这个接口
+    # 匿名公开，对外detail必须换成safe_errors的固定模板，不能把原始
+    # 输出直接返回。
+    return jsonify({
+        "target": target, "status": status,
+        "detail": safe_errors.safe_public_detail(status, error_category),
+        "post_count": fetch_outcome["post_count"], "commit": None,
+    }), 200
 
 
 _LOCK_STALE_SECONDS_BY_KEY = {

@@ -257,6 +257,7 @@ POST_TEMPLATE = """<!DOCTYPE html>
 <!-- GA_END -->
 <meta charset="UTF-8">
 <link rel="icon" type="image/png" href="/images/fox-header.png">
+<link rel="canonical" href="{canonical_url}">
 <title>{title}</title>
 <style>
 body {{ max-width: 760px; margin: 40px auto; padding: 0 20px;
@@ -559,6 +560,20 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
                  published_ts=None, updated_ts=None, finish_read_count=0, source_url=None,
                  canonical_path=None):
     tags_html = "".join(f'<a href="/index.html?tag={t}">#{t}</a>' for t in tags)
+
+    # canonical标签：不管这篇文章最终通过mirror/backup/github/cf哪个域名被
+    # 访问到，都固定指向mirror.foxzen.me——四个域名serve的是同一份html/源
+    # 文件（github/cf发布时shutil.copytree原样拷贝，publish_build.py的
+    # _rewrite_hostname()只处理index.html/robots.txt/sitemap.xml，不碰
+    # 逐篇文章文件，见其调用点），这里写死MIRROR_ROOT_URL就能让四处
+    # 同时正确，不需要按host分别生成。优先用canonical_path对应的规范地址
+    # （/YYYY/MM/slug.html，跟legacy_post_link()把/posts/<id>/ 301跳转到
+    # 这个地址是同一个"谁是权威URL"的判断）；permalink解析失败时退回
+    # /posts/{post_id}/（这种情况下这确实是唯一能访问到这篇文章的地址，
+    # 不会被redirect，自引用是对的）。
+    canonical_url = (f"{MIRROR_ROOT_URL}/{canonical_path}.html" if canonical_path
+                      else f"{MIRROR_ROOT_URL}/posts/{post_id}/")
+
     html = POST_TEMPLATE.format(
         title=title, published=published, tags_html=tags_html, content=content_html,
         click_count=click_count, download_count=download_count,
@@ -567,6 +582,7 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
         code_copy_block=CODE_COPY_BLOCK, discuss_cta_block=_discuss_cta_block(source_url),
         new_tab_links_block=NEW_TAB_LINKS_BLOCK,
         reading_stats=_reading_stats(content_html), syntax_highlight_block=SYNTAX_HIGHLIGHT_BLOCK,
+        canonical_url=canonical_url,
     )
     post_dir = POSTS_DIR / post_id
     post_dir.mkdir(parents=True, exist_ok=True)

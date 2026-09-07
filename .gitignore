@@ -70,6 +70,16 @@ data/blog.db
 data/blog.db-shm
 data/blog.db-wal
 
+# 站务内容：跟data/blog.db同样的道理——这三个文件的"真源"是GreenCloud服务器
+# 上随时可能被人工修改的实际内容，不是这份代码仓库本身。Git只保留对应的
+# .example模板（新部署/新clone时手动复制一次即可，见README/最终报告里的
+# 初始化步骤），避免以后任何git pull/checkout操作意外覆盖服务器上手工写的
+# 格言/公告/推荐博客。这三个文件原本是普通tracked文件，本次改动后用
+# `git rm --cached`从索引移除（工作目录里的文件本身没有被删除）。
+data/quotes.txt
+data/announcements.txt
+data/favorite_blogs.txt
+
 # Local secrets / credentials
 .env
 *.env

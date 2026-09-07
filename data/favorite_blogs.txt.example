@@ -1,0 +1,8 @@
+# 首页"我最喜欢的博客"数据源。
+# 每行一条格式：名称|URL   两段用竖线分隔。
+# 只允许HTTPS链接；名称/URL都会在渲染时做HTML转义；格式不对或URL不是合法
+# HTTPS地址的行会被跳过并在生成时打印警告，不会导致整个首页生成失败。
+# #开头的行是注释，会被跳过；空行也会被跳过。
+# 修改这个文件后重新跑一次 fetch_blog.py（或等下一次cron）即可生效，不需要改代码。
+Wait But Why|https://waitbutwhy.com/
+sive.rs|https://sive.rs/

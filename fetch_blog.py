@@ -34,7 +34,15 @@ from app import _inline_post_as_base64  # noqa: E402  跟backup_to_hetzner.py同
 # 且绑到blogspot会连带解析到Google IP触发GFW阻断），博客地址回退到Blogger默认域名。
 # 以后域名再变，只改这一行；下面首页链接和抓取地址都从这个常量派生。
 BLOG_ROOT_URL = "https://digatlas.blogspot.com"
-FEED_URL = f"{BLOG_ROOT_URL}/feeds/posts/default?alt=json&max-results=500"
+# Blogger feed用的是GData协议的分页约定：start-index（从1开始）+max-results，
+# 响应体feed.openSearch$totalResults/startIndex/itemsPerPage是标准OpenSearch
+# 分页扩展字段——用实际正式接口验证过（不是凭记忆假设）：itemsPerPage回显的
+# 是请求参数本身，不是这一页实际返回的条数，判断"是否最后一页"不能用它，
+# 只能看这一页实际返回的entry数量，见fetch_all_entries()。
+# 500这个每页条数沿用这个项目一直在用的值（改分页之前也是max-results=500，
+# 只是从来没真正翻过页）；文章数低于500时（目前是18篇）分页循环只会请求
+# 这一页，行为、请求次数跟改造前完全一致。
+FEED_PAGE_SIZE = 500
 MIRROR_ROOT_URL = "https://mirror.foxzen.me"
 INDEXNOW_KEY = "29bfb801721343b798cc9dfca454d8af"
 HTML_DIR = Path(__file__).parent / "html"
@@ -53,10 +61,105 @@ MEDIA_EXT_BY_CONTENT_TYPE = {
 }
 
 
-def fetch_feed() -> dict:
-    req = urllib.request.Request(FEED_URL, headers={"User-Agent": "blog-mirror-bot/1.0 (+https://mirror.foxzen.me)"})
+def fetch_feed_page(start_index: int, max_results: int) -> dict:
+    """抓取一页Blogger feed。start_index从1开始（Blogger/GData约定，不是0）。"""
+    url = f"{BLOG_ROOT_URL}/feeds/posts/default?alt=json&max-results={max_results}&start-index={start_index}"
+    req = urllib.request.Request(url, headers={"User-Agent": "blog-mirror-bot/1.0 (+https://mirror.foxzen.me)"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+class FeedPaginationError(Exception):
+    """分页抓取过程中，只要"已经拿到完整、可信的当前文章集合"这个前提不成立，
+    就抛这个异常，绝不返回一份不完整/不一致的部分结果——delete同步(见
+    sync_deleted_posts())的安全性完全建立在entries是一次完整快照这个假设上，
+    宁可这一轮整体失败重试，也不能让下游拿着残缺数据去判断"哪些文章被删除了"。
+
+    main()按跟原来fetch_feed()网络异常完全一样的方式捕获处理（记录失败、
+    Telegram通知、sys.exit(1)，不做任何upsert/删除同步），这个类不改变
+    main()对"抓取失败"的既有语义，只是把"部分成功但不完整"也归到同一类失败。
+    """
+
+
+def fetch_all_entries() -> list:
+    """分页抓取Blogger feed的全部文章，返回entries列表（跟旧版单页
+    data["feed"]["entry"]形状一致，调用方不需要改）。
+
+    完整性校验——任何一条不满足都抛FeedPaginationError，不返回部分结果：
+    - 每一页请求/JSON解析必须成功。
+    - 第一页必须能读到合法的openSearch$totalResults整数——这是判断
+      "是否已经拿全"的唯一依据，读不到就没法做completeness判断。
+    - totalResults必须在整个分页过程中保持不变；变了说明翻页期间Blogger
+      上的文章集合发生了变化（比如这时候有人发了新文章，Blogger默认按
+      发布时间倒序排列，会导致后续文章整体错位），这次拿到的不是同一个
+      时间点的一致快照，不可信。
+    - 单页返回条数不能超过请求的max_results（服务端行为异常的信号）。
+    - 每篇文章必须有id字段，且不能跟之前任何一页的id重复——重复本身就是
+      分页错位的直接证据。
+    - 最终累计条数必须刚好等于openSearch$totalResults：多了/少了都失败。
+    """
+    all_entries = []
+    seen_ids = set()
+    expected_total = None
+    start_index = 1
+
+    while True:
+        try:
+            page = fetch_feed_page(start_index, FEED_PAGE_SIZE)
+        except Exception as e:
+            raise FeedPaginationError(f"第{start_index}条起的分页请求失败: {e}") from e
+
+        feed = page.get("feed")
+        if not isinstance(feed, dict):
+            raise FeedPaginationError(f"第{start_index}条起的响应缺少feed字段")
+
+        total_raw = feed.get("openSearch$totalResults", {}).get("$t")
+        try:
+            total_this_page = int(total_raw)
+        except (TypeError, ValueError):
+            raise FeedPaginationError(
+                f"第{start_index}条起的响应缺少合法的openSearch$totalResults"
+                f"（实际: {total_raw!r}），无法确认文章总数，视为不完整"
+            )
+        if expected_total is None:
+            expected_total = total_this_page
+        elif total_this_page != expected_total:
+            raise FeedPaginationError(
+                f"分页过程中openSearch$totalResults发生变化"
+                f"（{expected_total} -> {total_this_page}，疑似翻页期间Blogger文章集合有变动），"
+                "本轮结果不可信"
+            )
+
+        page_entries = feed.get("entry", [])
+        if len(page_entries) > FEED_PAGE_SIZE:
+            raise FeedPaginationError(
+                f"第{start_index}条起的响应条数({len(page_entries)})超过请求的"
+                f"max-results({FEED_PAGE_SIZE})，服务端行为异常"
+            )
+
+        for entry in page_entries:
+            entry_id = entry.get("id", {}).get("$t")
+            if entry_id is None:
+                raise FeedPaginationError(f"第{start_index}条起的响应里有一篇文章缺少id字段")
+            if entry_id in seen_ids:
+                raise FeedPaginationError(
+                    f"文章{entry_id!r}在分页结果中重复出现，疑似翻页期间Blogger文章集合有变动"
+                )
+            seen_ids.add(entry_id)
+            all_entries.append(entry)
+
+        if len(page_entries) < FEED_PAGE_SIZE:
+            break  # 这一页数量不足一页，正常到达末尾（即使总数刚好是页大小的整数倍，
+                   # 也会多请求一次拿到0条来确认结束，见test_exact_multiple_of_page_size）
+        start_index += len(page_entries)
+
+    if len(all_entries) != expected_total:
+        raise FeedPaginationError(
+            f"累计抓到{len(all_entries)}篇，跟openSearch$totalResults声明的"
+            f"{expected_total}篇不一致"
+        )
+
+    return all_entries
 
 
 def slugify(entry_id: str) -> str:
@@ -613,15 +716,13 @@ def main():
     log_id = db.log_fetch_start()
 
     try:
-        data = fetch_feed()
+        entries = fetch_all_entries()
     except Exception as e:
-        msg = f"blog-mirror抓取失败（网络/feed异常）: {e}"
+        msg = f"blog-mirror抓取失败（网络/feed异常/分页不完整）: {e}"
         print(msg)
         db.log_fetch_end(log_id, "error", detail=str(e))
         notify(f"⚠️ {msg}")
         sys.exit(1)
-
-    entries = data.get("feed", {}).get("entry", [])
     print(f"抓到 {len(entries)} 篇文章")
 
     changed_count = 0

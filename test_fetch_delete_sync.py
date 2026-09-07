@@ -10,12 +10,13 @@
 - 删除同步后sitemap.xml/index.html/归档索引不残留已删除文章
 
 不覆盖（有意，见报告）：
-- fetch_feed()网络异常 -> main()提前sys.exit(1)这条路径本身：main()从未
-  有过网络层面的测试基础设施（这个项目至今没有test_fetch_blog.py），这里
-  不新建一套main()级别的网络mock框架；真正的安全性质——"没有可信的完整
-  文章集合就不删除任何东西"——由本文件的灾难保护测试在sync_deleted_posts()
-  这一层直接、完整地覆盖（main()对网络异常的处理是提前return/exit，实际
-  上根本不会走到sync_deleted_posts()这一步）。
+- fetch_all_entries()的分页/completeness细节（start-index翻页、
+  openSearch$totalResults一致性校验、FeedPaginationError各种触发条件）：
+  见test_feed_pagination.py，包括"分页不完整时main()不会删除任何已有
+  文章"这条端到端测试。本文件只测entries已经是一份可信完整集合之后的
+  部分（find_deleted_post_ids/_delete_post_static_files/
+  _deletion_sync_allowed/sync_deleted_posts），两者合起来才是完整链路，
+  刻意分文件避免这个文件既测delete逻辑又测网络分页逻辑，职责混在一起。
 - git层面"删除是否被正确commit/push"：见test_git_publish.py新增的
   test_deleted_file_under_subpath_is_committed_and_pushed()，属于
   git_publish.py自己的职责，不在这里重复测。

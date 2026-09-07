@@ -25,6 +25,7 @@ import base64
 import html.parser
 import json
 import mimetypes
+import random
 import re
 import shutil
 import zipfile
@@ -43,6 +44,11 @@ REFRESH_JS_SOURCE = BASE_DIR / "static_pages" / "pages-refresh.js"
 JSZIP_VENDOR_SOURCE = BASE_DIR / "static_pages" / "vendor" / "jszip.min.js"
 
 MIRROR_ROOT_URL = "https://mirror.foxzen.me"
+
+# 跟app.py::QUOTES_FILE指向同一个文件，但这里单独定义常量而不是`from app import
+# QUOTES_FILE`——原因跟上面BRAND_HEADING的说明一致：本文件设计成不依赖Flask/db，
+# 只读取磁盘上已有的静态文件本身。
+QUOTES_FILE = BASE_DIR / "data" / "quotes.txt"
 
 # 首页品牌文案的唯一权威定义跟fetch_blog.py的INDEX_TEMPLATE保持字面一致——
 # 如果那边的品牌文案再改，这里也要同步改。之所以在这里单独重复一份常量
@@ -307,9 +313,28 @@ def _normalize_brand_heading(content: str) -> str:
     return content
 
 
+def _random_quote() -> str:
+    """跟app.py::_random_quote()同样的逻辑（读quotes.txt、按行随机挑一条），
+    这里单独实现一份而不是导入app.py，理由同QUOTES_FILE：本文件不依赖Flask。
+
+    存在原因：html/index.html里的<!--QUOTE-->占位符是给app.py在Flask按请求
+    实时替换用的，静态发布(github.foxzen.me/cf.foxzen.me)没有Flask进程，如果
+    这里不替换，这个HTML注释在浏览器里不会显示任何文字——"🦊 "后面永远是空的。
+    静态构建按"每次构建选一条"处理（不是每个访客单独随机），这与Pages"构建一次、
+    多个访客看到相同产物"的静态本质一致，不需要引入任何运行时JS来实现"随机"。
+    """
+    try:
+        lines = [ln.strip() for ln in QUOTES_FILE.read_text(encoding="utf-8").splitlines()]
+        lines = [ln for ln in lines if ln]
+        return random.choice(lines) if lines else ""
+    except FileNotFoundError:
+        return ""
+
+
 def _build_index_html(host: str, output_dir: Path) -> str:
     content = (HTML_DIR / "index.html").read_text(encoding="utf-8")
     content = _normalize_brand_heading(content)
+    content = content.replace("<!--QUOTE-->", html.escape(_random_quote()))
     # 生产的static/index.js全靠/api/*，纯静态环境下必然失败，换成只做浏览器
     # 本地搜索/筛选/分页的pages-index.js（第十一节），并在#app前插入一个
     # 静态搜索工具栏——原有的服务端渲染fallback-list保留，JS加载完成后
@@ -768,9 +793,19 @@ def build_publish(host: str, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
 
     # GitHub Pages / Cloudflare Pages 都会自动把根目录的404.html当成
     # 未匹配路径的兜底页面；生产环境用的是 /404/index.html（Nginx按目录
-    # 处理），这里额外复制一份到根目录，两份内容完全一致，不重新渲染。
+    # 处理），这里额外复制一份到根目录。两份内容原则上保持一致，唯一的
+    # 例外是<!--QUOTE-->占位符：html/404/index.html跟html/index.html一样，
+    # 都是fetch_blog.py生成时留给"渲染时按请求替换"的占位符（对应app.py::
+    # easter_egg_404()），静态发布同样没有Flask进程能做这件事——这里曾经
+    # 完全没处理，是跟首页同一类但此前遗漏的缺口，导致github.foxzen.me/
+    # cf.foxzen.me的404页"🦊 "后面永远空白。在复制到根目录之前先原地替换
+    # 这份output_dir里的拷贝（不是html/源文件），根目录404.html随后从这份
+    # 已替换的内容复制而来，两份产物天然保持一致。
     legacy_404 = output_dir / "404" / "index.html"
     if legacy_404.exists():
+        content_404 = legacy_404.read_text(encoding="utf-8")
+        content_404 = content_404.replace("<!--QUOTE-->", html.escape(_random_quote()))
+        legacy_404.write_text(content_404, encoding="utf-8")
         shutil.copy2(legacy_404, output_dir / "404.html")
 
     CNAME = output_dir / "CNAME"
@@ -872,6 +907,13 @@ def verify_publish(output_dir: Path, host: str) -> None:
             continue
         if p.suffix in _DANGEROUS_SUFFIXES or p.name in _DANGEROUS_NAMES:
             errors.append(f"发现危险文件: {p.relative_to(output_dir)}")
+        # 安全网：<!--QUOTE-->占位符曾经在index.html/404.html各自独立地
+        # 出现过"忘记替换"的问题（一次是完全没实现，一次是404页单独漏掉），
+        # 这里把"任意.html文件不应残留字面量占位符"做成构建时强制检查，
+        # 不再依赖人工记得每新增一个占位符消费点就同步补一处替换逻辑。
+        if p.suffix == ".html" and "<!--QUOTE-->" in p.read_text(encoding="utf-8"):
+            errors.append(f"{p.relative_to(output_dir)} 仍残留未替换的<!--QUOTE-->占位符"
+                          f"（发布后这个位置会显示为空）")
 
     # 下载功能完整性：每篇文章都必须有对应的离线standalone版本，固定范围的
     # 两个zip（全站/全部）必须存在且内容干净——这几项已经在_REQUIRED_FILES/

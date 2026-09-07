@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """部署配置的静态检查：systemd service文件/nginx配置本身不会在这里真的被
 systemd/nginx加载执行（不能SSH/VPS验证真实生效，也不假设VPS上存在这个
-仓库之外的配置），只做文本层面的断言，确保两个具体的、审查中发现的问题
+仓库之外的配置），只做文本层面的断言，确保几个具体的、审查中发现的问题
 不会在未来被无意中改回去：
 
 - B4: gunicorn的--timeout必须覆盖refresh pipeline的真实最坏执行时间，
   不能依赖gunicorn默认的30秒。
 - S7: /api/refresh/的nginx层限流必须存在，且只影响mirror/backup两个
   Flask入口，不能改变download.foxzen.me/foxzen.me等其它站点的行为。
+- status.foxzen.me/update.foxzen.me多渠道架构：GreenCloud这一侧必须各自
+  有独立的443 server块、root到独立目录、不代理到Flask，确认这两个域名
+  真的是"GreenCloud直接托管的独立渠道"，不是mirror.foxzen.me的反向代理。
 
 用法: python3 test_deploy_config.py
 """
@@ -114,10 +117,42 @@ def test_nginx_refresh_api_has_dedicated_rate_limit():
           all("/api/refresh/" not in b for b in other_blocks), len(other_blocks))
 
 
+def test_status_and_update_nginx_blocks_exist_and_serve_own_static_root():
+    """status.foxzen.me/update.foxzen.me必须各自有独立的443 server块，各自
+    root到独立目录、不代理到Flask(172.17.0.1:5000)——这是"GreenCloud/Flask
+    进程本身宕机时这两个页面仍然尽量可以打开"的落地要求(见
+    build_status_page.py/generate_status_page.py文档字符串)，也是"多渠道
+    独立托管"要求在Nginx配置层面的体现：这两个域名不能是mirror.foxzen.me
+    的反向代理。
+    """
+    text = NGINX_FILE.read_text(encoding="utf-8")
+    server_blocks = _extract_server_blocks(text)
+
+    for domain, expected_root in (("status.foxzen.me", "/usr/share/nginx/html/status"),
+                                   ("update.foxzen.me", "/usr/share/nginx/html/update")):
+        https_block = next((b for b in server_blocks
+                             if f"server_name {domain};" in b and "listen 443" in b), None)
+        check(f"存在{domain}的443 server块", https_block is not None)
+        if https_block is None:
+            continue
+        check(f"{domain}的root指向独立目录{expected_root}",
+              f"root {expected_root};" in https_block, https_block)
+        check(f"{domain}不代理到Flask(172.17.0.1:5000)——静态独立托管，"
+              f"不依赖GreenCloud的Flask进程",
+              "proxy_pass" not in https_block, https_block)
+
+        http_block = next((b for b in server_blocks
+                            if f"server_name {domain};" in b and "listen 80" in b), None)
+        check(f"存在{domain}的80端口重定向块", http_block is not None)
+        if http_block is not None:
+            check(f"{domain}的80端口块把请求301到https", "return 301 https" in http_block, http_block)
+
+
 def main():
     tests = [
         test_gunicorn_timeout_covers_worst_case_refresh_duration,
         test_nginx_refresh_api_has_dedicated_rate_limit,
+        test_status_and_update_nginx_blocks_exist_and_serve_own_static_root,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

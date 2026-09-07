@@ -127,7 +127,18 @@ REFRESH_CORS_ALLOWED_ORIGINS = {
 # 内容"。这里特意用一个单独、更宽的集合，只给两个GET-only端点用，不给
 # POST触发端点用，让"这次改动到底新增了什么"在代码里一眼可辨。
 STATUS_PAGE_ORIGIN = "https://status.foxzen.me"
-STATUS_READ_CORS_ALLOWED_ORIGINS = REFRESH_CORS_ALLOWED_ORIGINS | {STATUS_PAGE_ORIGIN}
+# GitHub Pages卫星仓库foxzen-status发布的页面使用默认github.io地址
+# https://foxzenme.github.io/foxzen-status/（这一侧不绑定status.foxzen.me
+# 自定义域名，见build_status_page.py::publish_status_page()的
+# write_cname=False），页面本身跟status.foxzen.me是同一份PAGE_TEMPLATE、
+# 发起完全相同的探测请求，只是浏览器发起请求时的Origin不同——不加这一条，
+# 这个渠道打开时mirror/backup/github/cf/greencloud几行会因为CORS被挡住而
+# 全部显示"无法访问"，即使GreenCloud本身完全正常，就不是一个真正独立、
+# 功能对等的备用渠道了。GitHub Pages项目页面(<user>.github.io/<repo>/)的
+# CORS Origin只到github.io这一级、不含仓库名路径，所以foxzen-status和
+# foxzen-update两个卫星仓库共用这一个origin，不需要分别列出。
+GITHUB_PAGES_STATUS_ORIGIN = "https://foxzenme.github.io"
+STATUS_READ_CORS_ALLOWED_ORIGINS = REFRESH_CORS_ALLOWED_ORIGINS | {STATUS_PAGE_ORIGIN, GITHUB_PAGES_STATUS_ORIGIN}
 
 
 # ---------------------------------------------------------------------------
@@ -649,9 +660,10 @@ def _apply_refresh_cors(response):
       mirror/backup/github/cf——这四个是唯一会在页面上放"刷新"按钮、
       需要读取触发结果的站点，范围维持原样不扩大。
     - /api/refresh/<target>/status（GET查询 + OPTIONS）和/api/health
-      （GET）：额外允许status.foxzen.me——它只读展示这些端点本来就公开
-      的数据，从不调用POST（见test_status_page.py的验证），加这个白名单
-      不代表它获得了任何新的写权限。
+      （GET）：额外允许status.foxzen.me和foxzenme.github.io（同一份
+      status页面的GreenCloud/GitHub Pages两个独立渠道）——它们只读展示
+      这些端点本来就公开的数据，从不调用POST（见test_status_page.py的
+      验证），加这个白名单不代表获得了任何新的写权限。
     """
     path = request.path
     if path == "/api/health":

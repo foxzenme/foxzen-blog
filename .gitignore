@@ -55,6 +55,16 @@ $RECYCLE.BIN/
 data/zip_cache/
 static_status/
 
+# GreenCloud本地生成的status/update静态页：与上面的static_status/、下面的
+# /publish_status/同样的道理，由build_status_page.py --output-dir /
+# generate_status_page.py --repo-dir在GreenCloud上现场生成，不经过git，
+# 不应该进foxzen-blog自己的git历史。放在html/下只是复用现有
+# html/ -> /usr/share/nginx/html/这一条部署路径映射（见nginx-conf/
+# default.conf新增的status.foxzen.me/update.foxzen.me server块），不代表
+# 这两个子目录会跟随html/一起被git_publish.py的`git add -- html`提交。
+html/status/
+html/update/
+
 # Production database and SQLite runtime files
 data/blog.db
 data/blog.db-shm

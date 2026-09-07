@@ -17,36 +17,70 @@ publish_build.py的pages-*.js需要被多篇文章/多个host共用，这里只�
 
 用法:
     python3 build_status_page.py
-    （只在本地生成 publish_status/index.html + publish_status/CNAME，不做任何git操作）
+    （只在本地生成 publish_status/index.html + publish_status/CNAME(带
+    CNAME，预览"如果发布到GitHub Pages会长什么样")，不做任何git操作）
+
+    python3 build_status_page.py --output-dir <DIR>
+    （只在本地生成到DIR，不写CNAME、不做任何git操作——用于GreenCloud等
+    直接用Nginx按照status.foxzen.me自己的真实域名提供服务的场景：这个
+    输出不面向任何"需要额外绑定自定义域名"的平台，写CNAME反而是误导。
+    跟--publish互斥。）
 
     python3 build_status_page.py --publish <REPO_DIR>
-    （生成后立即复用git_publish.py，commit+push到REPO_DIR这个独立的卫星仓库——
-    例如GitHub Pages专用的foxzen-status仓库的本地checkout路径。REPO_DIR
-    必须是已经clone好、能fast-forward push到origin/master的独立git仓库，
-    且默认分支必须是"master"（git_publish.py硬编码检查这一点，见其文档
-    字符串B3修复说明）——这跟update.foxzen.me的CNAME、Cloudflare Pages
-    使用的static_status/是"foxzen-blog仓库内部的一个子目录"不同：这个页面
-    从设计起就没有那种用法（publish_status/本身在.gitignore里，从不打算
-    进foxzen-blog自己的git历史），repo_dir就是output_dir本身，commit的
-    subpath固定是"."，不需要额外的PUBLISH_SUBPATH参数。需要环境变量
-    GITHUB_TOKEN。
+    （生成后立即复用git_publish.py，commit+push到REPO_DIR这个独立的卫星
+    仓库——例如GitHub Pages专用的foxzen-status仓库的本地checkout路径。
+    REPO_DIR必须是已经clone好、能fast-forward push到origin/master的独立
+    git仓库，且默认分支必须是"master"（git_publish.py硬编码检查这一点，
+    见其文档字符串B3修复说明）——这跟update.foxzen.me的CNAME、Cloudflare
+    Pages使用的static_status/是"foxzen-blog仓库内部的一个子目录"不同：
+    这个页面从设计起就没有那种用法（publish_status/本身在.gitignore里，
+    从不打算进foxzen-blog自己的git历史），repo_dir就是output_dir本身，
+    commit的subpath固定是"."，不需要额外的PUBLISH_SUBPATH参数。需要环境
+    变量GITHUB_TOKEN。这个模式从设计起就不写CNAME(write_cname=False)——
+    GitHub Pages这一侧的最终决定是保持默认github.io地址
+    (https://foxzenme.github.io/foxzen-status/)，不绑定
+    status.foxzen.me这个自定义域名，真正拥有这个域名的是GreenCloud，
+    两边各自独立、互不代理、互不重定向。
+
+最终的"多渠道、同内容、独立故障域"架构（本次任务确定）：
+    同一份PAGE_TEMPLATE
+    ├── GitHub Pages(--publish)  → https://foxzenme.github.io/foxzen-status/
+    │                                （默认github.io地址，不绑定自定义域名）
+    └── GreenCloud(--output-dir) → https://status.foxzen.me/
+                                     （Nginx直接按真实域名提供，见
+                                     nginx-conf/default.conf新增的
+                                     status.foxzen.me server块，root指向
+                                     /usr/share/nginx/html/status——这个
+                                     目录预期由本命令在GreenCloud上现场
+                                     生成，不经过git，参照.gitignore里
+                                     html/status/的说明）
+    Cloudflare Pages(foxzen-status.pages.dev)本次不变动，暂时继续保留。
+    三者任意一个故障，理论上不影响另外两个——彼此没有反向代理、没有跳转
+    关系，只是内容来自同一套生成代码。
 
 尚未完成、需要人工决定的部分（本次不擅自处理）：
-    - status.foxzen.me这个子域名的DNS记录当前已经存在但代理到GreenCloud的
-      IP；如果采用这里的纯静态方案，需要在Cloudflare控制台把它改成指向
-      GitHub Pages/Cloudflare Pages（本轮不修改DNS）；
-    - GitHub Pages这一侧已经决定用一个独立的新仓库foxzen-status承载（见
-      .github/workflows/deploy-status-pages-github.yml），因为GitHub Pages
-      一个仓库只能绑定一个自定义域名，foxzen-blog自己的Pages名额已经给了
-      github.foxzen.me——这个新仓库需要人工创建、开启Pages(Deploy from a
-      branch)、把默认分支设成master、并在foxzen-blog仓库里加一个有权限
-      推送到它的PAT/deploy key(建议叫SATELLITE_PAGES_TOKEN，跟
-      deploy-update-pages-github.yml共用同一个secret)，这几步本次不擅自
-      处理；
-    - app.py里新增的status.foxzen.me CORS白名单，需要跟随代码一起部署到
-      GreenCloud（走正常的candidate cutover流程）之后，这个页面从浏览器
-      发起的跨域读取才会真正被允许——页面上线前必须确认这一步已经完成，
-      否则/api/health和/api/refresh/*/status会被浏览器的CORS拦下来。
+    - nginx-conf/default.conf已经加上status.foxzen.me的server块，但这只是
+      改了仓库里的配置文件本身，还没有同步到GreenCloud真实运行的Nginx、
+      也没有reload——本次不做生产部署；
+    - status.foxzen.me这个子域名的DNS记录当前代理到GreenCloud的IP，本轮
+      不修改DNS，也不确认这个代理当前是否真的把流量送到了上面这个新增的
+      Nginx server块（取决于GreenCloud当前实际运行的nginx-conf版本）；
+    - 上面nginx server块里的SSL证书沿用了backup.foxzen.me/download.foxzen.me
+      /foxzen.me共用的/etc/nginx/certs/foxzen/foxzen.crt——这份证书的真实
+      SAN列表里是否已经包含status.foxzen.me，本次没有办法从代码库确认
+      （证书文件本身不在这个仓库里），如果是一张按SAN逐个签发、而不是
+      泛域名(*.foxzen.me)的证书，可能需要人工重新签发才能覆盖这个新增
+      的子域名，这一步不属于代码层面的改动；
+    - GitHub Pages这一侧用一个独立的新仓库foxzen-status承载（见
+      .github/workflows/deploy-status-pages-github.yml），已经创建完成、
+      Pages已开启、SATELLITE_PAGES_TOKEN已配置——这部分基础设施搭建已经
+      完成，不再是待办；
+    - app.py里新增的两条CORS白名单（status.foxzen.me本身 + GitHub Pages
+      的默认域名foxzenme.github.io，见STATUS_READ_CORS_ALLOWED_ORIGINS），
+      都需要跟随代码一起部署到GreenCloud（走正常的candidate cutover流程）
+      之后，这两个渠道从浏览器发起的跨域读取才会真正被允许——页面上线前
+      必须确认这一步已经完成，否则/api/health和/api/refresh/*/status会被
+      浏览器的CORS拦下来，页面会打开但所有实时检测行都会显示"无法访问"。
 """
 import argparse
 import os
@@ -577,14 +611,19 @@ def render_page() -> str:
     return text
 
 
-def build_status_page(output_dir: Path = OUTPUT_DIR) -> Path:
-    """生成index.html + CNAME到output_dir，返回该目录路径。每次调用直接
-    覆盖已有文件——页面内容完全由PAGE_TEMPLATE决定，不依赖上一次构建的
+def build_status_page(output_dir: Path = OUTPUT_DIR, write_cname: bool = True) -> Path:
+    """生成index.html(+可选CNAME)到output_dir，返回该目录路径。每次调用
+    直接覆盖已有文件——页面内容完全由PAGE_TEMPLATE决定，不依赖上一次构建的
     残留状态，重复构建天然幂等。
+
+    write_cname=False用于不面向GitHub Pages自定义域名绑定的输出目标（比如
+    GreenCloud，域名本来就通过Nginx server_name直接匹配，CNAME文件在那里
+    没有任何意义，留着反而让人误以为这份内容是要交给GitHub Pages托管）。
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "index.html").write_text(render_page(), encoding="utf-8")
-    (output_dir / "CNAME").write_text(HOST + "\n", encoding="utf-8")
+    if write_cname:
+        (output_dir / "CNAME").write_text(HOST + "\n", encoding="utf-8")
     return output_dir
 
 
@@ -612,8 +651,15 @@ _REQUIRED_SUBSTRINGS = (
 )
 
 
-def verify_status_page(output_dir: Path) -> None:
-    """对已生成的status页面做安全/完整性检查，只做文本层面的断言。"""
+def verify_status_page(output_dir: Path, expect_cname: bool = True) -> None:
+    """对已生成的status页面做安全/完整性检查，只做文本层面的断言。
+
+    expect_cname必须跟build_status_page()调用时的write_cname保持一致：
+    expect_cname=False时不仅不要求CNAME存在，还会在CNAME意外存在时报错——
+    这是GitHub Pages卫星仓库发布路径的一道明确的反向检查(见
+    publish_status_page())，防止将来有人不小心改回默认参数、导致
+    status.foxzen.me自定义域名又被悄悄绑定回GitHub Pages。
+    """
     errors = []
     index_file = output_dir / "index.html"
     cname_file = output_dir / "CNAME"
@@ -622,10 +668,17 @@ def verify_status_page(output_dir: Path) -> None:
         raise StatusPageVerificationError("缺少 index.html")
     text = index_file.read_text(encoding="utf-8")
 
-    if not cname_file.exists():
-        errors.append("缺少 CNAME")
-    elif cname_file.read_text(encoding="utf-8").strip() != HOST:
-        errors.append(f"CNAME内容不是{HOST}")
+    if expect_cname:
+        if not cname_file.exists():
+            errors.append("缺少 CNAME")
+        elif cname_file.read_text(encoding="utf-8").strip() != HOST:
+            errors.append(f"CNAME内容不是{HOST}")
+    elif cname_file.exists():
+        errors.append(
+            f"不应存在CNAME：这个产物面向不绑定自定义域名的独立渠道"
+            f"（GitHub Pages应保持默认github.io地址），意外出现CNAME会让"
+            f"GitHub Pages重新以{HOST}这个自定义域名解释这份内容"
+        )
 
     for bad in _DANGEROUS_SUBSTRINGS:
         if bad in text:
@@ -649,6 +702,13 @@ def publish_status_page(repo_dir: Path) -> dict:
     """生成+校验status页面，然后commit+push到repo_dir这个独立的卫星仓库
     （例如GitHub Pages专用的foxzen-status仓库的本地checkout路径）。
 
+    这个函数专门服务GitHub Pages卫星仓库这一个场景，因此固定
+    write_cname=False/expect_cname=False：GitHub Pages这一侧的最终决定是
+    保持默认github.io地址(https://foxzenme.github.io/foxzen-status/)，
+    不绑定status.foxzen.me这个自定义域名——真正拥有这个域名的是
+    GreenCloud（见build_status_page()的--output-dir模式），两边各自独立、
+    互不代理、互不重定向。
+
     跟generate_status_page.py::publish_update_page()同一个"build->
     git_publish.commit_and_push()"模式，但这个页面从设计起就没有"作为
     foxzen-blog自己的子目录被提交"这个场景（publish_status/在.gitignore
@@ -665,8 +725,8 @@ def publish_status_page(repo_dir: Path) -> dict:
     的错误信息；GITHUB_TOKEN未设置时返回结构相同的credentials_missing
     错误，不抛异常。
     """
-    output_dir = build_status_page(repo_dir)
-    verify_status_page(output_dir)
+    output_dir = build_status_page(repo_dir, write_cname=False)
+    verify_status_page(output_dir, expect_cname=False)
 
     push_token = os.environ.get("GITHUB_TOKEN", "")
     if not push_token:
@@ -687,10 +747,29 @@ def main():
         "--publish", metavar="REPO_DIR", type=Path, default=None,
         help="生成后立即commit+push到指定的独立卫星仓库目录(比如GitHub Pages"
              "专用的foxzen-status仓库的本地checkout路径)，复用git_publish.py，"
-             "需要环境变量GITHUB_TOKEN。不加这个参数时只在本地生成"
-             "publish_status/，不做任何git操作。",
+             "需要环境变量GITHUB_TOKEN。不写CNAME(GitHub Pages这一侧保持"
+             "默认github.io地址)。跟--output-dir互斥。不加任何参数时只在"
+             "本地生成publish_status/(带CNAME预览)，不做任何git操作。",
+    )
+    parser.add_argument(
+        "--output-dir", metavar="OUTPUT_DIR", type=Path, default=None,
+        help="只在本地生成到指定目录，不写CNAME、不做任何git操作——用于"
+             "GreenCloud等直接用Nginx按status.foxzen.me真实域名提供服务的"
+             "场景(见nginx-conf/default.conf里对应的server块)。跟--publish"
+             "互斥。",
     )
     args = parser.parse_args()
+
+    if args.publish is not None and args.output_dir is not None:
+        parser.error("--publish 和 --output-dir 不能同时使用（分别对应"
+                      "GitHub Pages卫星仓库和GreenCloud两个不同的独立渠道）")
+
+    if args.output_dir is not None:
+        output_dir = build_status_page(args.output_dir, write_cname=False)
+        verify_status_page(output_dir, expect_cname=False)
+        print(f"已生成并通过安全检查 {output_dir}（不含CNAME，供GreenCloud等"
+              f"直接按{HOST}真实域名提供服务的独立渠道使用）")
+        return
 
     if args.publish is None:
         output_dir = build_status_page()

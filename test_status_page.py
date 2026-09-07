@@ -433,10 +433,14 @@ def _with_github_token(value, fn):
 
 
 def test_publish_status_page_writes_files_at_satellite_repo_root():
-    """卫星仓库场景下repo_dir就是output_dir本身，index.html/CNAME必须直接
-    落在仓库根目录——不能像update.foxzen.me的static_status/那样嵌套在
-    一个子目录里，这是两者"是否作为foxzen-blog自己的子目录被提交"的
-    关键区别。"""
+    """卫星仓库场景下repo_dir就是output_dir本身，index.html必须直接落在
+    仓库根目录——不能像update.foxzen.me的static_status/那样嵌套在一个
+    子目录里，这是两者"是否作为foxzen-blog自己的子目录被提交"的关键区别。
+
+    多渠道架构下这个场景明确不写CNAME：GitHub Pages这一侧保持默认
+    github.io地址(https://foxzenme.github.io/foxzen-status/)，
+    status.foxzen.me这个自定义域名只属于GreenCloud，两边不能同时绑定
+    同一个域名。"""
     def _run_case(work_dir, remote_dir):
         import build_status_page as bsp
 
@@ -444,13 +448,130 @@ def test_publish_status_page_writes_files_at_satellite_repo_root():
             result = bsp.publish_status_page(work_dir)
             check("推送成功", result["pushed"], result)
             check("index.html落在仓库根目录", (work_dir / "index.html").exists())
-            check("CNAME落在仓库根目录", (work_dir / "CNAME").exists())
-            check("CNAME内容是status.foxzen.me",
-                  (work_dir / "CNAME").read_text(encoding="utf-8").strip() == "status.foxzen.me")
+            check("GitHub Pages卫星仓库不应该有CNAME(保持默认github.io地址，"
+                  "不绑定status.foxzen.me自定义域名)",
+                  not (work_dir / "CNAME").exists())
             remote_head = _run_cmd("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
             check("远程(bare repo)真的收到了这次push", remote_head == result["commit_sha"])
         _with_github_token("fake-test-token-not-a-real-credential", _do)
     _with_temp_satellite_repo(_run_case)
+
+
+# ---------------------------------------------------------------------------
+# 多渠道架构（本次新增）：write_cname/expect_cname开关 + GreenCloud用的
+# --output-dir CLI + GitHub Pages卫星仓库(foxzenme.github.io)的CORS白名单。
+# ---------------------------------------------------------------------------
+
+def test_write_cname_false_omits_cname_file():
+    """write_cname=False（GreenCloud/GitHub Pages两个不绑定
+    status.foxzen.me自定义域名的场景共用的开关）必须真的不写CNAME文件，
+    且verify_status_page()在expect_cname=False时应该对这个"没有CNAME"的
+    产物判定通过，而不是像默认参数那样把"没有CNAME"当成错误。"""
+    import build_status_page as bsp
+    tmp = Path(tempfile.mkdtemp(prefix="status_page_test_"))
+    try:
+        output_dir = bsp.build_status_page(tmp / "out", write_cname=False)
+        check("write_cname=False时不生成CNAME文件", not (output_dir / "CNAME").exists())
+        check("index.html仍然正常生成", (output_dir / "index.html").exists())
+        try:
+            bsp.verify_status_page(output_dir, expect_cname=False)
+            ok, detail = True, ""
+        except bsp.StatusPageVerificationError as e:
+            ok, detail = False, str(e)
+        check("expect_cname=False时，没有CNAME的产物通过校验", ok, detail)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_verify_status_page_rejects_unexpected_cname():
+    """反向检查：expect_cname=False时，如果CNAME意外存在（比如未来有人不
+    小心改回默认参数调用build_status_page()），verify_status_page()必须
+    报错，不能悄悄放过——这道检查专门防止status.foxzen.me自定义域名被
+    意外重新绑定回GitHub Pages。"""
+    import build_status_page as bsp
+    tmp = Path(tempfile.mkdtemp(prefix="status_page_test_"))
+    try:
+        output_dir = bsp.build_status_page(tmp / "out")  # 故意用默认参数，模拟"忘了传write_cname=False"
+        try:
+            bsp.verify_status_page(output_dir, expect_cname=False)
+            ok = True
+        except bsp.StatusPageVerificationError:
+            ok = False
+        check("expect_cname=False时，意外存在的CNAME必须被拒绝", not ok)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_cli_output_dir_flag_generates_without_git_or_cname():
+    """直接跑真实CLI命令(python build_status_page.py --output-dir <DIR>)，
+    验证的是GreenCloud上实际会执行的那一行命令本身：只生成文件、不写
+    CNAME、不做任何git操作(不需要GITHUB_TOKEN、不需要DIR是git仓库)。"""
+    import subprocess
+    tmp = Path(tempfile.mkdtemp(prefix="status_page_cli_test_"))
+    try:
+        result = subprocess.run(
+            [sys.executable, str(BASE_DIR / "build_status_page.py"),
+             "--output-dir", str(tmp / "out")],
+            cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        check("CLI命令退出码为0", result.returncode == 0, result.stderr)
+        check("index.html已生成", (tmp / "out" / "index.html").exists())
+        check("不生成CNAME(不是git仓库也不需要GITHUB_TOKEN)", not (tmp / "out" / "CNAME").exists())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_cli_publish_and_output_dir_are_mutually_exclusive():
+    """--publish和--output-dir分别对应GitHub Pages卫星仓库和GreenCloud两个
+    不同的独立渠道，同时使用没有意义，CLI必须直接报错退出，不能悄悄选择
+    其中一个生效。"""
+    import subprocess
+    tmp = Path(tempfile.mkdtemp(prefix="status_page_cli_test_"))
+    try:
+        result = subprocess.run(
+            [sys.executable, str(BASE_DIR / "build_status_page.py"),
+             "--publish", str(tmp / "a"), "--output-dir", str(tmp / "b")],
+            cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        check("同时传--publish和--output-dir时CLI报错退出(非0)", result.returncode != 0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_github_pages_status_origin_allowed_on_get_only_endpoints():
+    """foxzenme.github.io(GitHub Pages卫星仓库foxzen-status发布出来的默认
+    地址)必须能读到跟status.foxzen.me完全一样的GET-only端点——这是"两个
+    渠道功能完全相同"这个要求在CORS层面的落地，否则GitHub Pages这个独立
+    渠道打开时所有实时探测行都会因为CORS被挡住而显示"无法访问"。"""
+    def run(app_module):
+        client = app_module.app.test_client()
+        origin = "https://foxzenme.github.io"
+
+        r = client.get("/api/health", headers={"Origin": origin})
+        check("foxzenme.github.io能读取/api/health的CORS响应头",
+              r.headers.get("Access-Control-Allow-Origin") == origin,
+              r.headers.get("Access-Control-Allow-Origin"))
+
+        for target in ("mirror", "backup", "github", "cf"):
+            r = client.get(f"/api/refresh/{target}/status", headers={"Origin": origin})
+            check(f"foxzenme.github.io能读取/api/refresh/{target}/status的CORS响应头",
+                  r.headers.get("Access-Control-Allow-Origin") == origin,
+                  r.headers.get("Access-Control-Allow-Origin"))
+
+    _with_temp_app_for_cors(run)
+
+
+def test_github_pages_status_origin_excluded_from_post_trigger_endpoint():
+    def run(app_module):
+        client = app_module.app.test_client()
+        origin = "https://foxzenme.github.io"
+        r = client.options("/api/refresh/mirror", headers={"Origin": origin})
+        check("foxzenme.github.io不应该出现在POST触发端点的CORS白名单里"
+              "(只应该能读GET-only的/status端点，跟status.foxzen.me同样的范围限制)",
+              r.headers.get("Access-Control-Allow-Origin") != origin,
+              r.headers.get("Access-Control-Allow-Origin"))
+
+    _with_temp_app_for_cors(run)
 
 
 def test_publish_status_page_missing_token_returns_error_not_exception():
@@ -502,6 +623,8 @@ def main():
         test_status_origin_excluded_from_post_trigger_endpoint,
         test_existing_refresh_cors_origins_unaffected,
         test_unrelated_origin_still_rejected,
+        test_github_pages_status_origin_allowed_on_get_only_endpoints,
+        test_github_pages_status_origin_excluded_from_post_trigger_endpoint,
         test_lang_toggle_button_present,
         test_status_strings_zh_en_key_sets_symmetric,
         test_live_updated_badge_and_detail_never_carry_data_i18n,
@@ -510,6 +633,10 @@ def main():
         test_publish_status_page_writes_files_at_satellite_repo_root,
         test_publish_status_page_missing_token_returns_error_not_exception,
         test_publish_status_page_second_run_is_noop,
+        test_write_cname_false_omits_cname_file,
+        test_verify_status_page_rejects_unexpected_cname,
+        test_cli_output_dir_flag_generates_without_git_or_cname,
+        test_cli_publish_and_output_dir_are_mutually_exclusive,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

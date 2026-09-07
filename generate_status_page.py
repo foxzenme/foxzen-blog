@@ -15,24 +15,69 @@ publish_build.py/build_status_page.py现有的发布约定），跟正常博客�
 
 用法：
     python3 generate_status_page.py
-    （只在本地生成 static_status/index.html + static_status/CNAME，不做任何git操作）
+    （只在本地生成 static_status/index.html + static_status/CNAME(带CNAME，
+    对应Cloudflare Pages从foxzen-blog仓库static_status/子目录构建的用法)，
+    不做任何git操作）
+
+    python3 generate_status_page.py --repo-dir <DIR>
+    （只在本地生成到DIR，不写CNAME、不做任何git操作——用于GreenCloud等
+    直接用Nginx按update.foxzen.me真实域名提供服务的场景，不涉及git。跟
+    下面--publish --repo-dir是同一个DIR参数，分别对应"只生成"和"生成后
+    立即推送"两种模式。）
 
     python3 generate_status_page.py --publish
     （生成后立即复用git_publish.py，commit+push static_status/这一个目录到
     origin/master——即"改TXT -> 一条命令发布"，需要当前目录是一个能push的
     git仓库、且环境变量GITHUB_TOKEN已设置；只会commit/push static_status/，
-    不会碰data/announcements.txt本身或仓库里其它任何改动）
+    不会碰data/announcements.txt本身或仓库里其它任何改动。这个默认模式
+    保留CNAME=update.foxzen.me，行为不变）
+
+    python3 generate_status_page.py --publish --repo-dir <DIR>
+    （生成后commit+push到DIR这个独立的卫星仓库根目录——例如GitHub Pages
+    专用的foxzen-update仓库的本地checkout路径，DIR必须已经clone好、能
+    fast-forward push到origin/master、默认分支是master。不写CNAME——
+    GitHub Pages这一侧的最终决定是保持默认github.io地址
+    (https://foxzenme.github.io/foxzen-update/)，不绑定update.foxzen.me
+    这个自定义域名，真正拥有这个域名的是GreenCloud，两边各自独立、互不
+    代理、互不重定向。）
+
+最终的"多渠道、同内容、独立故障域"架构（本次任务确定）：
+    同一份PAGE_TEMPLATE/data/announcements.txt
+    ├── GitHub Pages(--publish --repo-dir) → https://foxzenme.github.io/foxzen-update/
+    │                                          （默认github.io地址，不绑定自定义域名）
+    └── GreenCloud(--repo-dir，不带--publish) → https://update.foxzen.me/
+                                                  （Nginx直接按真实域名提供，
+                                                  见nginx-conf/default.conf
+                                                  新增的update.foxzen.me
+                                                  server块，root指向
+                                                  /usr/share/nginx/html/update
+                                                  ——这个目录预期由本命令在
+                                                  GreenCloud上现场生成，不
+                                                  经过git，参照.gitignore
+                                                  里html/update/的说明）
+    Cloudflare Pages(foxzen-update.pages.dev，通过默认--publish模式的
+    static_status/子目录构建)本次不变动，暂时继续保留。三者任意一个故障，
+    理论上不影响另外两个——彼此没有反向代理、没有跳转关系，只是内容来自
+    同一套生成代码。
 
 尚未完成、需要人工决定的部分（本次不擅自处理）：
+    - nginx-conf/default.conf已经加上update.foxzen.me的server块，但这只是
+      改了仓库里的配置文件本身，还没有同步到GreenCloud真实运行的Nginx、
+      也没有reload——本次不做生产部署；
     - update.foxzen.me 这个子域名的DNS记录当前仍代理到GreenCloud的IP，
-      还没有切到foxzen-update.pages.dev（本轮不修改DNS）；
+      本轮不修改DNS，也不确认这个代理当前是否真的把流量送到了上面这个
+      新增的Nginx server块（取决于GreenCloud当前实际运行的nginx-conf
+      版本）；
+    - 上面nginx server块里的SSL证书沿用了backup.foxzen.me/foxzen.me共用的
+      /etc/nginx/certs/foxzen/foxzen.crt——这份证书的真实SAN列表里是否已
+      经包含update.foxzen.me，本次没有办法从代码库确认，如果不是泛域名
+      证书，可能需要人工重新签发才能覆盖这个新增的子域名；
     - 生产服务器上暂时还没有一个"既是git仓库、又有GITHUB_TOKEN可用"的
-      /root/blog-mirror目录来实际跑`--publish`——现状是/root/blog-mirror
-      本身不是git仓库，候选目录/root/blog-mirror-new才是（细节见这次任务
-      的报告），--publish要在生产上真正可用，需要先完成cutover，这不是
-      本轮范围；
-    - cron/自动任务检测announcements.txt变化并自动发布，本轮按要求没有引入，
-      `--publish`目前需要人工在改完TXT后手动执行；
+      /root/blog-mirror目录来实际跑默认的`--publish`（面向Cloudflare
+      Pages那条路径）——现状是/root/blog-mirror本身不是git仓库，候选目录
+      /root/blog-mirror-new才是（细节见这次任务的报告），这不是本轮范围；
+    - cron/自动任务检测announcements.txt变化并自动发布，本轮按要求没有
+      引入，`--publish`/`--repo-dir`目前都需要人工手动执行；
     - data/announcements.txt 目前没有任何真实公告内容，是否发布第一条
       公告、写什么，由你决定，这里不代为编造。
 """
@@ -262,22 +307,28 @@ def render_html(entries):
     )
 
 
-def build_update_page(output_dir: Path = OUTPUT_DIR, announcements_file: Path = ANNOUNCEMENTS_FILE):
-    """解析announcements_file、渲染HTML，连同CNAME一起写入output_dir，
+def build_update_page(output_dir: Path = OUTPUT_DIR, announcements_file: Path = ANNOUNCEMENTS_FILE,
+                       write_cname: bool = True):
+    """解析announcements_file、渲染HTML，连同可选的CNAME一起写入output_dir，
     返回(output_dir, entries)——entries一并返回给调用方（含main()自己的
     打印、测试）复用，不需要重新解析一遍文件。
+
+    write_cname=False用于不面向GitHub Pages自定义域名绑定的输出目标（比如
+    GreenCloud，域名本来就通过Nginx server_name直接匹配，CNAME文件在那里
+    没有任何意义，留着反而让人误以为这份内容是要交给GitHub Pages托管）。
     """
     text = announcements_file.read_text(encoding="utf-8") if announcements_file.exists() else ""
     entries = parse_announcements(text)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "index.html").write_text(render_html(entries), encoding="utf-8")
-    (output_dir / "CNAME").write_text(HOST + "\n", encoding="utf-8")
+    if write_cname:
+        (output_dir / "CNAME").write_text(HOST + "\n", encoding="utf-8")
     return output_dir, entries
 
 
 def publish_update_page(repo_dir: Path = BASE_DIR, output_dir: Path = OUTPUT_DIR,
                          announcements_file: Path = ANNOUNCEMENTS_FILE,
-                         subpath: str = PUBLISH_SUBPATH) -> dict:
+                         subpath: str = PUBLISH_SUBPATH, write_cname: bool = True) -> dict:
     """"改TXT -> 一条命令发布"的落地实现：先重新生成static_status/，再复用
     已有的git_publish.commit_and_push()把这个目录commit+push——这跟app.py里
     github/cf两个refresh target推送html/用的是同一个函数，不是重新写一遍git
@@ -297,6 +348,13 @@ def publish_update_page(repo_dir: Path = BASE_DIR, output_dir: Path = OUTPUT_DIR
     这种场景repo_dir/output_dir都指向那个卫星仓库的checkout路径本身，整个
     仓库根目录就是这个页面，不再是foxzen-blog内部的一个子目录。
 
+    write_cname默认True，保持"发布到foxzen-blog自己的static_status/子目录
+    (供Cloudflare Pages构建)"这个既有场景不变。GitHub Pages卫星仓库场景
+    (subpath=".")调用方必须显式传write_cname=False——GitHub Pages这一侧的
+    最终决定是保持默认github.io地址，不绑定update.foxzen.me这个自定义
+    域名，写CNAME会让GitHub Pages重新接管这个域名的解释权，跟GreenCloud
+    独立托管的架构冲突。
+
     push认证读环境变量GITHUB_TOKEN（跟app.py同一个约定），不在这里假设它
     来自哪个具体文件——本地是否用`export`还是从某个受保护权限的文件里读出来
     再传进这个进程，是运维层面的选择，不是这个函数需要关心的事。
@@ -305,7 +363,7 @@ def publish_update_page(repo_dir: Path = BASE_DIR, output_dir: Path = OUTPUT_DIR
     字段（这一轮实际生成了多少条公告，方便调用方打印/测试断言），不吞掉
     任何git_publish已经分类好的错误信息。
     """
-    output_dir, entries = build_update_page(output_dir, announcements_file)
+    output_dir, entries = build_update_page(output_dir, announcements_file, write_cname=write_cname)
 
     push_token = os.environ.get("GITHUB_TOKEN", "")
     if not push_token:
@@ -332,21 +390,26 @@ def main():
     )
     parser.add_argument(
         "--repo-dir", type=Path, default=None,
-        help="发布到一个独立的卫星仓库根目录(比如GitHub Pages专用的"
-             "foxzen-update仓库的本地checkout路径)，而不是默认推到"
-             "foxzen-blog本身的static_status/子目录。只在--publish时有意义；"
-             "不传时保持原有行为(生成/推送到BASE_DIR下的static_status/)。",
+        help="不加--publish时：只在本地生成到这个目录，不写CNAME、不做任何"
+             "git操作（用于GreenCloud等直接用Nginx按update.foxzen.me真实"
+             "域名提供服务的场景）。加--publish时：发布到这个独立的卫星"
+             "仓库根目录(比如GitHub Pages专用的foxzen-update仓库的本地"
+             "checkout路径)，同样不写CNAME，而不是默认推到foxzen-blog本身"
+             "的static_status/子目录。不传时两种模式都保持原有行为(生成/"
+             "推送到BASE_DIR下的static_status/，带CNAME)。",
     )
     args = parser.parse_args()
 
     if not args.publish:
         output_dir = args.repo_dir if args.repo_dir else OUTPUT_DIR
-        output_dir, entries = build_update_page(output_dir)
+        write_cname = args.repo_dir is None
+        output_dir, entries = build_update_page(output_dir, write_cname=write_cname)
         print(f"已生成 {output_dir / 'index.html'}，共{len(entries)}条公告。")
         return
 
     if args.repo_dir:
-        result = publish_update_page(repo_dir=args.repo_dir, output_dir=args.repo_dir, subpath=".")
+        result = publish_update_page(repo_dir=args.repo_dir, output_dir=args.repo_dir,
+                                      subpath=".", write_cname=False)
     else:
         result = publish_update_page()
     if result["pushed"]:

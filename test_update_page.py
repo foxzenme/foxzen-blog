@@ -413,8 +413,12 @@ def _with_github_token(value, fn):
 
 def test_publish_update_page_subpath_dot_writes_at_satellite_repo_root():
     """subpath="."时，repo_dir/output_dir都指向卫星仓库checkout本身——
-    index.html/CNAME必须直接落在仓库根目录，不能嵌套在static_status/
-    子目录里(那是"作为foxzen-blog自己的子目录被提交"这个不同场景的行为)。
+    index.html必须直接落在仓库根目录，不能嵌套在static_status/子目录里
+    (那是"作为foxzen-blog自己的子目录被提交"这个不同场景的行为)。
+
+    多渠道架构下这个场景要求调用方显式传write_cname=False：GitHub Pages
+    这一侧保持默认github.io地址(https://foxzenme.github.io/foxzen-update/)，
+    update.foxzen.me这个自定义域名只属于GreenCloud。
     """
     def _run_case(work_dir, remote_dir):
         import generate_status_page as gsp
@@ -423,14 +427,14 @@ def test_publish_update_page_subpath_dot_writes_at_satellite_repo_root():
             result = gsp.publish_update_page(
                 repo_dir=work_dir, output_dir=work_dir,
                 announcements_file=BASE_DIR / "data" / "announcements.txt.example",
-                subpath=".",
+                subpath=".", write_cname=False,
             )
             check("推送成功", result["pushed"], result)
             check("index.html落在仓库根目录(不是static_status/index.html)",
                   (work_dir / "index.html").exists())
-            check("CNAME落在仓库根目录", (work_dir / "CNAME").exists())
-            check("CNAME内容是update.foxzen.me",
-                  (work_dir / "CNAME").read_text(encoding="utf-8").strip() == "update.foxzen.me")
+            check("GitHub Pages卫星仓库不应该有CNAME(保持默认github.io地址，"
+                  "不绑定update.foxzen.me自定义域名)",
+                  not (work_dir / "CNAME").exists())
             check("没有意外生成static_status/子目录", not (work_dir / "static_status").exists())
             remote_head = _run_cmd("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
             check("远程(bare repo)真的收到了这次push", remote_head == result["commit_sha"])
@@ -480,6 +484,9 @@ def test_cli_repo_dir_flag_generates_and_publishes_end_to_end():
     <path>)，验证的是GitHub Actions workflow(deploy-update-pages-github.yml)
     实际会调用的那一行命令本身，而不只是内部Python函数——argparse接线、
     Path类型转换、--repo-dir与--publish的组合逻辑都在这条路径上。
+
+    多渠道架构下这条路径不应该再写CNAME：GitHub Pages这一侧保持默认
+    github.io地址，不绑定update.foxzen.me自定义域名。
     """
     def _run_case(work_dir, remote_dir):
         import os
@@ -494,11 +501,30 @@ def test_cli_repo_dir_flag_generates_and_publishes_end_to_end():
         )
         check("CLI命令退出码为0", result.returncode == 0, result.stderr)
         check("index.html落在仓库根目录", (work_dir / "index.html").exists())
-        check("CNAME内容是update.foxzen.me",
-              (work_dir / "CNAME").read_text(encoding="utf-8").strip() == "update.foxzen.me")
+        check("GitHub Pages卫星仓库不应该有CNAME(保持默认github.io地址，"
+              "不绑定update.foxzen.me自定义域名)", not (work_dir / "CNAME").exists())
         remote_head = _run_cmd("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
         check("远程(bare repo)真的收到了这次push", bool(remote_head))
     _with_temp_satellite_repo(_run_case)
+
+
+def test_cli_repo_dir_without_publish_generates_without_cname_or_git():
+    """python generate_status_page.py --repo-dir <DIR>(不带--publish)：
+    GreenCloud上实际会执行的那一行命令——只生成文件、不写CNAME、不做任何
+    git操作(不需要GITHUB_TOKEN、DIR也不需要是git仓库)。"""
+    import subprocess
+    tmp = Path(tempfile.mkdtemp(prefix="update_page_cli_test_"))
+    try:
+        result = subprocess.run(
+            [sys.executable, str(BASE_DIR / "generate_status_page.py"),
+             "--repo-dir", str(tmp / "out")],
+            cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        check("CLI命令退出码为0", result.returncode == 0, result.stderr)
+        check("index.html已生成", (tmp / "out" / "index.html").exists())
+        check("不生成CNAME(不是git仓库也不需要GITHUB_TOKEN)", not (tmp / "out" / "CNAME").exists())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():
@@ -523,6 +549,7 @@ def main():
         test_publish_update_page_subpath_dot_writes_at_satellite_repo_root,
         test_publish_update_page_default_subpath_unchanged,
         test_cli_repo_dir_flag_generates_and_publishes_end_to_end,
+        test_cli_repo_dir_without_publish_generates_without_cname_or_git,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

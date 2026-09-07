@@ -13,9 +13,11 @@ name: Deploy update.foxzen.me to GitHub Pages (foxzen-update)
 #      fine-grained PAT，添加到本仓库(foxzen-blog) Settings -> Secrets ->
 #      Actions，命名为 SATELLITE_PAGES_TOKEN（跟
 #      deploy-status-pages-github.yml共用同一个secret）。
-#   4. （更远期，不属于这个workflow）真正决定update.foxzen.me的DNS要指向
-#      GitHub Pages还是Cloudflare Pages时，再去foxzen-update仓库设置里
-#      绑定自定义域名——本次不修改DNS。
+#   4. 不需要再绑定自定义域名：最终架构决定GitHub Pages这一侧永久保持默认
+#      github.io地址(https://foxzenme.github.io/foxzen-update/)，
+#      update.foxzen.me这个自定义域名只属于GreenCloud（见
+#      generate_status_page.py::publish_update_page()的write_cname=False，
+#      以及nginx-conf/default.conf新增的update.foxzen.me server块）。
 on:
   workflow_dispatch: {}
 

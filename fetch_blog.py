@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import urllib.request
 from pathlib import Path
@@ -477,6 +478,135 @@ def render_post(post_id, title, published, tags, content_html, click_count=0, do
         static_target.write_text(html, encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Blogger删除文章 -> 本地镜像同步删除
+#
+# 权威源是Blogger：Blogger当前存在的文章 = 镜像应该存在的文章。这一组
+# 函数负责找出"本地数据库里有、但这次抓取到的Blogger文章集合里已经没有"
+# 的post_id，删除它们在html/下的静态文件和数据库记录。
+#
+# 只处理GreenCloud本地镜像（html/ + data/blog.db）：GitHub Pages/
+# Cloudflare Pages的静态发布产物完全由publish_build.py从html/现场重建
+# （build_publish()每次调用都shutil.rmtree(output_dir)后重新复制，见该
+# 文件说明），html/里少了的文件不会被复制进publish/，不需要另外写删除
+# 逻辑；git_publish.py的commit_and_push()用`git add -- html`（不是
+# `git add -A`/`git add .`，但对已跟踪文件而言，显式pathspec本身就等价于
+# 连删除一起加入暂存区——已实测确认），本身就能正确检测并提交html/下的
+# 文件删除，同样不需要新代码。这组函数因此只用管本地文件系统和数据库
+# 这两处"权威数据"，下游全部自动跟着重新生成/重新计算。
+#
+# 不处理：permalink变更（文章还在，只是路径变了）——那是旧canonical路径
+# 文件"不删除、靠短号跳转到新地址"的既有设计（见main()里的[permalink变更]
+# 打印），跟"文章彻底不存在了"是两个不同的场景，不在这组函数处理范围内。
+# ---------------------------------------------------------------------------
+
+def find_deleted_post_ids(current_ids: set) -> list:
+    """current_ids：本次成功抓取到的Blogger文章集合对应的post_id集合。
+    返回：本地数据库里存在、但这次抓取结果里已经不存在的post_id列表
+    （按post_id排序，保证确定性输出顺序，方便日志/测试对照）。
+
+    纯集合差集运算，不判断current_ids本身是否可信——"什么时候允许执行
+    删除"由调用方sync_deleted_posts()通过_deletion_sync_allowed()把关，
+    不下放到这里，避免"允许删除"的判断散落在多个函数里。
+    """
+    existing_ids = db.get_all_post_ids()
+    return sorted(existing_ids - current_ids)
+
+
+def _delete_post_static_files(post_id: str, canonical_path) -> None:
+    """删除一篇文章在html/下对应的全部静态文件：posts/{post_id}/整个目录
+    （含media/），以及（如果有canonical_path）对应的YYYY/MM/slug.html。
+
+    canonical_path的路径安全校验复用canonical_static_target()——跟
+    render_post()生成这个文件时是同一份边界检查，不需要另写一遍。
+    posts/{post_id}/这一侧单独做一次resolve()+relative_to()确认落点确实
+    在POSTS_DIR内部：post_id只可能来自slugify()的输出，结构上不含路径
+    穿越字符，这里纯粹是防御性的第二道保险，不是假设它真的会失败。
+
+    调用方（sync_deleted_posts()）必须在这个函数成功返回之后才删除对应的
+    数据库记录，顺序不能反过来：如果先删数据库记录、这一步再失败或进程被
+    中断，磁盘上会遗留一个数据库已经不认识、但依然能被原URL直接访问到的
+    "僵尸文章"——不只是脏数据，是真的还在线上、还会被搜索引擎继续抓到，
+    而且因为html/这边"看起来没有变化"，git不会检测到任何差异，这个僵尸
+    文件会永远留在仓库里、永远不会通过下一次发布自动消失。反过来，这一步
+    成功但数据库记录还没删（两步之间进程被杀）最坏后果只是首页/归档暂时
+    还列着一条点进去404的死链接，下次抓取会重新判定这个post_id仍然待删除
+    并自动重试、自愈——明显是更安全的失败模式，这也是本函数存在、不把
+    "删文件"和"删数据库记录"揉进同一步的原因。
+    """
+    post_dir = POSTS_DIR / post_id
+    if post_dir.exists():
+        post_dir.resolve().relative_to(POSTS_DIR.resolve())
+        shutil.rmtree(post_dir)
+
+    static_target = canonical_static_target(canonical_path)
+    if static_target is not None and static_target.exists():
+        static_target.unlink()
+        # 顺手清理因此变空的YYYY/MM、YYYY目录：git本来就不追踪空目录，
+        # 不清理也不影响任何发布结果，只是让磁盘上的html/目录树保持干净。
+        # rmdir在目录非空时抛OSError——同月/同年还有其它文章是最常见的
+        # 正常情况，不是错误，静默跳过；年目录清理失败（通常是因为还有
+        # 其它月份）同理静默跳过。
+        for ancestor in (static_target.parent, static_target.parent.parent):
+            try:
+                ancestor.rmdir()
+            except OSError:
+                pass
+
+
+def _deletion_sync_allowed(entries: list) -> bool:
+    """只有entries非空时才允许执行删除同步。
+
+    fetch_feed()请求本身失败（网络错误/HTTP错误）已经在main()里更早的
+    位置直接记录失败并sys.exit(1)，走不到这里。这个检查专门防的是另一种
+    更隐蔽的情况：请求"成功"了（HTTP 200，JSON也能正常解析），但feed结构
+    异常、被截断，或者entry字段缺失/为空数组，解析出0篇文章——绝不能把
+    "这次啥也没抓到"当成"Blogger上所有文章都被删除了"，宁可这一轮跳过
+    删除同步、保留现有全部文章，等下一次抓取恢复正常再重试。这是删除同步
+    最重要的安全边界。
+    """
+    return bool(entries)
+
+
+def sync_deleted_posts(entries: list) -> list:
+    """比较entries（这次成功抓取到的Blogger文章集合）跟本地数据库当前的
+    post_id集合，删除本地已经不存在于Blogger的文章：先删html/下的静态
+    文件，确认成功后才删数据库记录（顺序原因见_delete_post_static_files()
+    文档字符串）。返回实际删除成功的[{"post_id":..., "canonical_path":...},
+    ...]列表（canonical_path可能是None），供调用方拼IndexNow/Cloudflare
+    缓存清除用的URL。
+
+    安全边界：entries为空时直接返回空列表、不做任何删除，见
+    _deletion_sync_allowed()。单篇文章删除过程中如果静态文件删除失败
+    （比如权限问题），跳过这一篇、保留它的数据库记录，继续处理其它待删除
+    文章，不因为一篇文章删除失败就让整次抓取任务失败。
+    """
+    if not _deletion_sync_allowed(entries):
+        print("  [警告] 本次抓取到0篇文章，疑似Blogger API返回异常或数据不完整，"
+              "跳过本轮删除同步（保留现有全部文章，等下次抓取恢复正常再重试）")
+        return []
+
+    current_ids = {slugify(e["id"]["$t"]) for e in entries}
+    deleted_ids = find_deleted_post_ids(current_ids)
+    if not deleted_ids:
+        return []
+
+    print(f"检测到{len(deleted_ids)}篇文章在Blogger已删除，开始同步删除本地镜像: {deleted_ids}")
+    deleted = []
+    for post_id in deleted_ids:
+        canonical_path = db.get_canonical_path(post_id)
+        try:
+            _delete_post_static_files(post_id, canonical_path)
+        except Exception as e:
+            print(f"  [警告] 删除文章{post_id}的静态文件失败，本次跳过"
+                  f"（数据库记录保留，下次抓取会重试）: {e}")
+            continue
+        db.delete_post_record(post_id)
+        deleted.append({"post_id": post_id, "canonical_path": canonical_path})
+        print(f"  [删除] {post_id}（canonical_path={canonical_path!r}）已从本地镜像移除")
+    return deleted
+
+
 def main():
     HTML_DIR.mkdir(parents=True, exist_ok=True)
     db.init_db()
@@ -538,6 +668,14 @@ def main():
         db.upsert_post(post_id, title, localized_content, tags, published, updated, new_hash,
                         canonical_path=canonical_path, source_url=blogger_url, published_ts=published_raw)
 
+    # 删除同步：必须在上面entries处理完、下面render_index()/render_seo_files()
+    # 重新生成首页/sitemap之前执行，这样"Blogger已删除的文章"能在同一轮抓取里
+    # 从html/、数据库、首页、sitemap、归档、排行榜、ZIP缓存签名里一次性消失
+    # （后几项都是从posts表现场重新计算/生成，不需要额外代码，见
+    # sync_deleted_posts()文件头的架构说明）。
+    deleted = sync_deleted_posts(entries)
+    deleted_urls = [f"{MIRROR_ROOT_URL}/{d['canonical_path']}.html" for d in deleted if d["canonical_path"]]
+
     # 渲染文章页需要点击/下载数，抓取完统一取一次，避免逐篇查库
     click_counts = db.get_all_post_click_counts()
     download_counts = db.get_all_post_download_counts()
@@ -566,11 +704,19 @@ def main():
     assign_short_number_links()
     render_index()
     render_seo_files()
-    if changed_urls:
-        _submit_indexnow(changed_urls)
-        _purge_cloudflare_cache(changed_urls)
-    db.log_fetch_end(log_id, "ok", detail=f"changed={changed_count}, 无canonical={no_canonical_count}", post_count=len(entries))
-    print(f"完成。共 {len(entries)} 篇，{changed_count} 篇有更新，{no_canonical_count} 篇无法解析canonical_path。")
+    # 删除的文章URL跟新增/变更的URL一起，走同一套IndexNow提交/Cloudflare缓存
+    # 清除机制——两边都只按URL处理，不关心URL"为什么"变化，不需要为删除
+    # 场景另写一套。IndexNow：告诉搜索引擎这个URL需要重新抓取（会发现已经
+    # 404/410，进而从索引移除）。Cloudflare缓存清除：避免mirror.foxzen.me
+    # 边缘节点在文章已删除后仍继续返回旧的缓存内容。
+    notify_urls = changed_urls + deleted_urls
+    if notify_urls:
+        _submit_indexnow(notify_urls)
+        _purge_cloudflare_cache(notify_urls)
+    db.log_fetch_end(log_id, "ok",
+                      detail=f"changed={changed_count}, 删除={len(deleted)}, 无canonical={no_canonical_count}",
+                      post_count=len(entries))
+    print(f"完成。共 {len(entries)} 篇，{changed_count} 篇有更新，{len(deleted)} 篇已删除，{no_canonical_count} 篇无法解析canonical_path。")
 
 
 def assign_short_number_links():

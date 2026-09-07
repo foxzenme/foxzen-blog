@@ -135,6 +135,40 @@ def test_changes_committed_and_pushed_with_bot_identity():
     with_temp_repo(_run_case)
 
 
+def test_deleted_file_under_subpath_is_committed_and_pushed():
+    """Blogger删除文章同步（fetch_blog.py的sync_deleted_posts()）依赖这一条：
+    html/下的文件删除必须能被现有的`git add -- subpath`（不带-A/-u）正确
+    检测并提交，不需要为删除场景另写git逻辑。这里用两轮commit_and_push()
+    验证：第一轮先提交一个文件让它进入一次真实的历史提交，第二轮删掉它，
+    确认删除被正确staged、commit、push到远端，且没有把它误判为"无变化"。
+    """
+    def _run_case(work_dir, remote_dir):
+        post_file = work_dir / "html" / "posts" / "will-be-deleted.html"
+        post_file.parent.mkdir(parents=True)
+        post_file.write_text("<p>this post will be deleted</p>", encoding="utf-8")
+        first = git_publish.commit_and_push(work_dir, "html", BOT_NAME, BOT_EMAIL,
+                                             "add post", "fake-token", 30)
+        check("第一轮：新增文件被正常commit+push", first["pushed"] and first["changed_file_count"] == 1)
+
+        post_file.unlink()
+        second = git_publish.commit_and_push(work_dir, "html", BOT_NAME, BOT_EMAIL,
+                                              "delete post", "fake-token", 30)
+        check("第二轮：删除文件也被识别为一次变化", second["pushed"] and second["changed_file_count"] == 1, second)
+        check("第二轮确实产生了新commit（sha跟第一轮不同）",
+              second["commit_sha"] != first["commit_sha"], (first["commit_sha"], second["commit_sha"]))
+
+        tracked = _run("git", "ls-tree", "-r", "--name-only", "HEAD", "--", "html", cwd=work_dir).stdout
+        check("删除的文件不再出现在HEAD的工作树里",
+              "html/posts/will-be-deleted.html" not in tracked.splitlines(), tracked)
+
+        remote_head = _run("git", "rev-parse", "master", cwd=remote_dir).stdout.strip()
+        check("远程(bare repo)HEAD跟这次删除commit一致", remote_head == second["commit_sha"])
+        remote_tracked = _run("git", "ls-tree", "-r", "--name-only", remote_head, "--", "html", cwd=remote_dir).stdout
+        check("远程仓库里也确认删除已经生效，不是只有本地work_dir看起来删了",
+              "html/posts/will-be-deleted.html" not in remote_tracked.splitlines(), remote_tracked)
+    with_temp_repo(_run_case)
+
+
 def test_add_scope_strictly_limited_to_subpath():
     """subpath之外的脏文件——包括这个仓库里可能还躺着的、别人正在进行的
     其它未提交工作——绝不能被git_publish误提交。这是"绝不用git add ./-A"
@@ -529,6 +563,7 @@ def main():
     tests = [
         test_no_changes_no_commit_no_push,
         test_changes_committed_and_pushed_with_bot_identity,
+        test_deleted_file_under_subpath_is_committed_and_pushed,
         test_add_scope_strictly_limited_to_subpath,
         test_staged_external_file_never_enters_commit,
         test_true_noop_when_head_already_matches_remote,

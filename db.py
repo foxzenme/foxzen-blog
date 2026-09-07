@@ -881,6 +881,44 @@ def get_all_posts():
               "canonical_path": r["canonical_path"]} for r in rows]
 
 
+def get_all_post_ids():
+    """返回posts表当前全部post_id的集合，供fetch_blog.py比较Blogger本次
+    抓取到的文章集合，找出本地存在但Blogger已经不存在的文章（删除同步）。
+    只取这一列，不像get_all_posts()那样JOIN post_numbers/解析tags JSON——
+    删除同步只需要知道"有哪些post_id"，不需要标题/标签这些展示用字段。
+    """
+    conn = get_conn()
+    rows = conn.execute("SELECT post_id FROM posts").fetchall()
+    conn.close()
+    return {r["post_id"] for r in rows}
+
+
+def delete_post_record(post_id: str):
+    """删除一篇文章的"当前版本"记录（posts表 + posts_fts搜索索引），用于
+    Blogger删除同步（fetch_blog.py的sync_deleted_posts()）。
+
+    只删这两张表，不动：
+    - post_versions：历史版本归档，"不设数量上限"是既有的明确要求（见
+      save_version()），"从当前网站删除"不等于"从历史记录里永久消失"。
+    - post_numbers：短号一旦分配永久固定（见schema注释），万一Blogger
+      以后又恢复这篇文章，重新抓取时应该拿回同一个号码，而不是当成全新
+      文章分配一个新号——保留这一行不会造成任何可见问题：get_canonical_path
+      对已删除的post_id返回None，短号跳转会自然退到/posts/<id>/再404。
+    - download_counts/page_hits(_dedup)/finish_reads(_dedup)：纯历史访问
+      事实记录，不参与任何"当前站点应该显示什么"的判断——get_top_clicked/
+      get_top_downloaded都INNER JOIN posts，文章记录一旦从posts消失就
+      自动从排行榜消失，不需要额外清理这些表。
+
+    调用方必须先确认这篇文章在html/下对应的静态文件已经删除成功，再调用
+    这个函数——这里本身不做任何文件系统操作。
+    """
+    conn = get_conn()
+    conn.execute("DELETE FROM posts_fts WHERE post_id = ?", (post_id,))
+    conn.execute("DELETE FROM posts WHERE post_id = ?", (post_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_all_permalinks():
     """返回 {Blogger permalink: 本站当前应该用的根相对地址} 映射，只给Flask
     响应层改写文章正文里"引用本站另一篇文章"的Blogger链接用（见internal_links.py）。

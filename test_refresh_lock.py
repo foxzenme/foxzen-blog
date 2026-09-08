@@ -100,6 +100,7 @@ def with_temp_app_env(fn):
     orig_trigger_and_wait = app_module.github_actions.trigger_and_wait
     orig_poll_until_conclusion = app_module.github_actions.poll_until_conclusion
     orig_background_wait = app_module.GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS
+    orig_sync_html = app_module._sync_html_to_publish_repo
 
     stub = tmp / "stub_fetch.py"
     stub.write_text(
@@ -110,6 +111,14 @@ def with_temp_app_env(fn):
         encoding="utf-8",
     )
     app_module.FETCH_SCRIPT = stub
+    # 架构改造：_run_git_publish()现在在commit_and_push()之前先调用
+    # _sync_html_to_publish_repo()做一次真实rsync（见app.py）。这个文件
+    # 测的是锁/冷却/fencing/S8安全摘要这些_run_git_publish()自身以外的
+    # 编排逻辑，不是rsync机制本身（那是test_publish_repo_sync.py的范围）
+    # ——默认换成一个直接返回None（视为成功）的桩，让这里所有原本
+    # mock commit_and_push()直接验证其行为的测试不需要真的准备一个有效
+    # 的GIT_PUBLISH_REPO_DIR或安装rsync二进制。
+    app_module._sync_html_to_publish_repo = lambda: None
     try:
         db.init_db()
         fn(tmp, db, app_module)
@@ -123,6 +132,7 @@ def with_temp_app_env(fn):
         app_module.github_actions.trigger_and_wait = orig_trigger_and_wait
         app_module.github_actions.poll_until_conclusion = orig_poll_until_conclusion
         app_module.GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS = orig_background_wait
+        app_module._sync_html_to_publish_repo = orig_sync_html
         shutil.rmtree(tmp, ignore_errors=True)
 
     if real_db_mtime is not None:

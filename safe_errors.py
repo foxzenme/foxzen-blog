@@ -37,6 +37,7 @@ _SAFE_FAILURE_DETAIL_BY_CATEGORY = {
     "repository_busy": "服务器仓库正在进行其它 Git 操作，已拒绝发布",
     "repository_state_error": "无法确认服务器仓库状态，已拒绝发布",
     "remote_diverged": "本地与远端仓库历史已分叉，已拒绝自动覆盖，需人工介入",
+    "repository_sync_error": "服务器内容同步失败，已拒绝发布",
     "credentials_missing": "服务器未配置必要凭据",
     "workflow_dispatch_error": "GitHub Actions 触发失败",
     "run_identification_error": "无法确认本次触发对应的 GitHub Actions 运行",

@@ -83,16 +83,18 @@ GIT_PUSH_TIMEOUT_SECONDS = 60                  # git push本身的subprocess超�
 # 时间，否则一个正常进行中、尚未超时的git_publish会被误判为"进程已经死了"
 # 而被stale-recovery机制强行抢占——这不是理论风险，是简单的算术错误
 # （旧值120本身就小于当时git_publish.py内部subprocess timeout总和）。
-# 逐项计算git_publish.commit_and_push()按最坏情况顺序执行完的subprocess
-# timeout之和（见git_publish.py）：
+# 逐项计算_run_git_publish()临界区按最坏情况顺序执行完的subprocess timeout
+# 之和（rsync见_sync_html_to_publish_repo()；其余见git_publish.py）：
+#   _sync_html_to_publish_repo: rsync(GIT_PUBLISH_RSYNC_TIMEOUT_SECONDS=120)                 = 120
 #   _check_publish_preconditions: rev-parse --abbrev-ref HEAD(10) + rev-parse --git-dir(10) = 20
 #   detect_changed_paths: git status --porcelain(30)                                        = 30
 #   git add -- html(30)                                                                      = 30
 #   git commit --only(30)                                                                    = 30
 #   _push: git push(GIT_PUSH_TIMEOUT_SECONDS=60)                                             = 60
-# 合计170秒。留130秒余量（覆盖磁盘/CPU繁忙时的额外调度延迟，以及SQLite
-# BEGIN IMMEDIATE本身等待写锁的时间），取整300秒。
-GIT_PUBLISH_STALE_SECONDS = 300
+# 合计290秒。留130秒余量（覆盖磁盘/CPU繁忙时的额外调度延迟，以及SQLite
+# BEGIN IMMEDIATE本身等待写锁的时间），取整420秒。
+GIT_PUBLISH_STALE_SECONDS = 420
+GIT_PUBLISH_RSYNC_TIMEOUT_SECONDS = 120        # rsync production html/ -> 发布副本html/ 的subprocess超时
 GITHUB_ACTIONS_WAIT_SECONDS = 90               # 同步HTTP请求里有界轮询Actions conclusion的上限，超过就返回202/running
 # 90秒有界等待到期只是这次HTTP请求不再继续占用gunicorn worker等下去，不代表
 # 没人关心结果——超时后会启动一个后台daemon线程继续跟踪，这是它的独立、
@@ -102,6 +104,15 @@ GITHUB_ACTIONS_WAIT_SECONDS = 90               # 同步HTTP请求里有界轮询
 # "确实异常了就别再等"上限，不是精确计算出来的值，如果之后发现工作流
 # 经常需要更久，直接调这一个数字即可。
 GITHUB_ACTIONS_BACKGROUND_WAIT_SECONDS = 1200
+
+# production目录（BASE_DIR）永远不是Git仓库——不把.git、Git历史、Git操作
+# 本身的风险带进production；github/cf发布经由一个独立的Git工作树完成，
+# 每次发布前先把production html/单向rsync进去（见_sync_html_to_publish_repo()），
+# 只有这个发布副本才会被git_publish.commit_and_push()真正commit/push。
+# 用BASE_DIR.parent（production目录的父目录）拼出来，不是硬编码绝对路径——
+# 跟BASE_DIR/HTML_DIR等既有常量同一种写法，测试里直接monkeypatch这个
+# 模块属性指向一次性临时目录即可，不需要真的摆在BASE_DIR旁边。
+GIT_PUBLISH_REPO_DIR = BASE_DIR.parent / "blog-mirror-git"
 
 GITHUB_REPO = "foxzenme/foxzen-blog"
 GITHUB_PAGES_WORKFLOW_FILE = "pages.yml"
@@ -330,13 +341,72 @@ def _run_content_fetch(target_key: str) -> dict:
             "target_generation": acquire["target_generation"]}
 
 
+def _sync_html_to_publish_repo() -> dict | None:
+    """把production HTML_DIR单向rsync进GIT_PUBLISH_REPO_DIR/html/——production
+    目录本身永远不是Git仓库（见GIT_PUBLISH_REPO_DIR定义处的注释），github/cf
+    真正commit/push的是这个独立发布副本，不是production自己。
+
+    调用方（_run_git_publish()）必须保证这个函数只在已经拿到GIT_PUBLISH_LOCK、
+    且cross_check_idle已经确认content_fetch不在运行之后才被调用——这个函数
+    本身不做任何锁相关的事，读到的production html/是不是"静止态"完全依赖
+    调用方已经持有的这把锁：content_fetch（fetch_blog.py整个抓取/删除同步/
+    首页sitemap重生成）和git_publish两把锁互相cross_check_idle、且底层
+    db.try_acquire_lock()用SQLite BEGIN IMMEDIATE做原子检查，二者不可能
+    同时运行（详见db.py），所以这里rsync读到的production html/不会是
+    fetch_blog.py还在写一半的撕裂状态。
+
+    只处理html/这一个子目录：显式传"{HTML_DIR}/"和"{dest}/"这两个具体路径
+    给rsync（结尾斜杠是"同步目录内容"而不是"把目录本身塞进去"的标准rsync
+    语义），不会碰发布副本里的.git/、也不会碰production自己的data/、venv/
+    ——这些目录从未出现在传给rsync的参数里，不是靠rsync的什么排除规则
+    才没被同步到。
+
+    返回：
+      None                                          —— rsync成功完成。
+      {"pushed": False, "error_category": "repository_sync_error",
+       "detail": str}                                —— 发布副本目录不存在/
+        不是Git仓库、或rsync本身失败/超时/发生未预期异常——形状特意跟
+        git_publish.commit_and_push()的失败返回值一致，调用方可以直接
+        把这个结果当成push_result使用，不需要额外分支。返回而不是抛异常，
+        原因同git_publish.py自己的既有约定：调用方finally里的锁释放逻辑
+        不应该被这里的异常绕过。
+    """
+    if not (GIT_PUBLISH_REPO_DIR / ".git").exists():
+        return {"pushed": False, "error_category": "repository_sync_error",
+                "detail": f"发布副本仓库不存在或不是Git仓库: {GIT_PUBLISH_REPO_DIR}"}
+
+    dest_html = GIT_PUBLISH_REPO_DIR / "html"
+    try:
+        result = subprocess.run(
+            ["rsync", "-a", "--delete", f"{HTML_DIR}/", f"{dest_html}/"],
+            capture_output=True, text=True, timeout=GIT_PUBLISH_RSYNC_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {"pushed": False, "error_category": "repository_sync_error",
+                "detail": f"rsync同步超时(>{GIT_PUBLISH_RSYNC_TIMEOUT_SECONDS}s)"}
+    except Exception as e:
+        # rsync二进制缺失(FileNotFoundError)等未预料到的情况，同一个兜底
+        # 分类，跟下面exit!=0一样不允许继续往下走到commit_and_push()。
+        return {"pushed": False, "error_category": "repository_sync_error",
+                "detail": safe_errors.redact_known_secrets(f"rsync同步发生未预期异常: {e}", GITHUB_TOKEN)}
+
+    if result.returncode != 0:
+        return {"pushed": False, "error_category": "repository_sync_error",
+                "detail": safe_errors.redact_known_secrets(
+                    f"rsync同步失败(exit={result.returncode}): {result.stderr[-500:]}", GITHUB_TOKEN)}
+    return None
+
+
 def _run_git_publish(target_key: str, *, target_cooldown: bool = False) -> dict:
     """github/cf共用的第二阶段：原子获取git_publish锁（同样检查content_fetch
-    是否idle）-> 校验分支/仓库状态(B3) -> 检测html/实际变化 -> 只有真的有
-    变化才commit（O-2：没有变化绝不产生空commit）-> 无论本轮是否有变化都
-    尝试push一次（B2：不能因为本轮html/无变化就跳过push——上一轮如果
-    commit成功但push失败，会在本地留下一个从未真正推送的commit，必须
-    在下一次调用时继续补上，不能被静默当作"无变化"而永远遗漏）。
+    是否idle）-> 把production html/单向rsync进独立发布副本
+    GIT_PUBLISH_REPO_DIR（见_sync_html_to_publish_repo()）-> 校验分支/仓库
+    状态(B3) -> 检测html/实际变化 -> 只有真的有变化才commit（O-2：没有
+    变化绝不产生空commit）-> 无论本轮是否有变化都尝试push一次（B2：不能
+    因为本轮html/无变化就跳过push——上一轮如果commit成功但push失败，
+    会在本地留下一个从未真正推送的commit，必须在下一次调用时继续补上，
+    不能被静默当作"无变化"而永远遗漏）。rsync失败时直接fail closed：
+    不会走到git status/add/commit/push任何一步。
 
     target_cooldown（单次热更新自动发布fan-out引入）：
       False（默认，供_start_publish_fan_out()内部调用）：不检查/不推进
@@ -367,8 +437,10 @@ def _run_git_publish(target_key: str, *, target_cooldown: bool = False) -> dict:
        "target_generation": int | None}
         错误分类详见git_publish.commit_and_push()的文档字符串（B1/B2/B3
         引入了wrong_branch/repository_busy/repository_state_error/
-        remote_diverged几种新类别）。target_generation仅target_cooldown=True
-        时非None，供调用方原样传给record_target_result()的expected_generation。
+        remote_diverged几种新类别），另加rsync这一步专属的
+        repository_sync_error（见_sync_html_to_publish_repo()）。
+        target_generation仅target_cooldown=True时非None，供调用方原样传给
+        record_target_result()的expected_generation。
     """
     if not GITHUB_TOKEN:
         return {"acquired": True, "pushed": False, "error_category": "credentials_missing",
@@ -389,8 +461,9 @@ def _run_git_publish(target_key: str, *, target_cooldown: bool = False) -> dict:
     status, detail = "error", "未知错误"
     push_result = {"pushed": False, "error_category": "git_commit_error", "detail": detail}
     try:
-        push_result = git_publish.commit_and_push(
-            BASE_DIR, "html", GIT_BOT_NAME, GIT_BOT_EMAIL, commit_message,
+        sync_error = _sync_html_to_publish_repo()
+        push_result = sync_error if sync_error is not None else git_publish.commit_and_push(
+            GIT_PUBLISH_REPO_DIR, "html", GIT_BOT_NAME, GIT_BOT_EMAIL, commit_message,
             GITHUB_TOKEN, GIT_PUSH_TIMEOUT_SECONDS,
         )
         status = "ok" if push_result["pushed"] else "error"

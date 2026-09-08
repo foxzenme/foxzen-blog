@@ -60,6 +60,17 @@ def with_temp_db(fn):
 def with_temp_app_env(fn):
     """跟test_refresh_lock.py::with_temp_app_env()同一个约定（各测试文件
     各自维护一份，不共享），临时db + 临时FETCH_SCRIPT（可控stub脚本）。
+
+    _sync_html_to_publish_repo()（架构改造：production html/ rsync进独立
+    发布副本GIT_PUBLISH_REPO_DIR，见app.py）默认被替换成一个直接返回None
+    （视为成功）的桩：这个文件测的是fan-out编排逻辑本身（谁调用
+    _run_git_publish、什么时候调用、结果记到哪个target），不是rsync
+    机制本身（那是test_publish_repo_sync.py的范围），默认桩让这里的
+    测试继续像改动前一样、不需要真的有一个有效的GIT_PUBLISH_REPO_DIR
+    或真的安装了rsync二进制就能验证commit_and_push()是否被正确调用到。
+    需要验证真实rsync+commit+push端到端行为的测试（目前只有
+    test_fan_out_sequential_publish_produces_single_commit一个）自己
+    把这个属性换回原函数。
     """
     tmp = Path(tempfile.mkdtemp(prefix="fanout_api_test_"))
     real_db_mtime = REAL_DB.stat().st_mtime if REAL_DB.exists() else None
@@ -75,6 +86,9 @@ def with_temp_app_env(fn):
     orig_trigger_and_wait = app_module.github_actions.trigger_and_wait
     orig_start_fan_out = app_module._start_publish_fan_out
     orig_base_dir = app_module.BASE_DIR
+    orig_html_dir = app_module.HTML_DIR
+    orig_repo_dir = app_module.GIT_PUBLISH_REPO_DIR
+    orig_sync_html = app_module._sync_html_to_publish_repo
 
     stub = tmp / "stub_fetch.py"
     stub.write_text(
@@ -85,6 +99,7 @@ def with_temp_app_env(fn):
         encoding="utf-8",
     )
     app_module.FETCH_SCRIPT = stub
+    app_module._sync_html_to_publish_repo = lambda: None
     try:
         db.init_db()
         fn(tmp, db, app_module)
@@ -96,6 +111,9 @@ def with_temp_app_env(fn):
         app_module.github_actions.trigger_and_wait = orig_trigger_and_wait
         app_module._start_publish_fan_out = orig_start_fan_out
         app_module.BASE_DIR = orig_base_dir
+        app_module.HTML_DIR = orig_html_dir
+        app_module.GIT_PUBLISH_REPO_DIR = orig_repo_dir
+        app_module._sync_html_to_publish_repo = orig_sync_html
         shutil.rmtree(tmp, ignore_errors=True)
 
     if real_db_mtime is not None:
@@ -458,16 +476,36 @@ def _env_with_identity(name, email):
 
 def test_fan_out_sequential_publish_produces_single_commit():
     """跟test_git_publish.py::with_temp_repo()同样的真实临时仓库手法：
-    github的_publish_and_report()先跑，真的commit+push一次；紧接着cf的
-    _publish_and_report()再跑，此时html/已经没有变化，必须落进noop分支，
-    不产生第二个commit——不依赖任何"只让第一个target真正提交"的额外
-    判断逻辑，纯粹是git_publish.commit_and_push()本身"没变化不commit"
-    这个既有行为的自然结果（见_publish_and_report()里的注释）。
+    github的_publish_and_report()先跑，真的rsync+commit+push一次；紧接着
+    cf的_publish_and_report()再跑，此时production html/自上次rsync以来
+    没有变化，必须落进noop分支，不产生第二个commit——不依赖任何"只让
+    第一个target真正提交"的额外判断逻辑，纯粹是git_publish.commit_and_push()
+    本身"没变化不commit"这个既有行为的自然结果（见_publish_and_report()
+    里的注释）。
+
+    这是本文件唯一一个真的把_sync_html_to_publish_repo()换回真实实现
+    （其它测试用with_temp_app_env()默认的no-op桩，见该函数文档字符串）
+    的测试——rsync+commit+push端到端链路本身的细节由
+    test_publish_repo_sync.py覆盖，这里只关心"顺序发布只产生一个commit"
+    这条fan-out编排层面的既有结论在repo_dir从BASE_DIR换成
+    GIT_PUBLISH_REPO_DIR之后依然成立。本机没有rsync二进制时跳过。
     """
+    import shutil as _shutil
+    if _shutil.which("rsync") is None:
+        print("  [SKIP] 本机没有rsync二进制，跳过（见test_publish_repo_sync.py同样的约定）")
+        return
+
+    # with_temp_app_env()默认会把_sync_html_to_publish_repo换成no-op桩
+    # （见其文档字符串）——这里在那之前先拿到真正的原始实现，供下面_run()
+    # 内部换回去，这样这一个测试才能真的走一遍rsync+commit+push。
+    import app as _app_module_outer
+    real_sync_fn = _app_module_outer._sync_html_to_publish_repo
+
     def _run(tmp, db, app_module):
-        import os
         remote_dir = tmp / "remote.git"
         work_dir = tmp / "work"
+        prod_html = tmp / "production_html"
+        prod_html.mkdir()
         _git_run("git", "init", "--bare", "-b", "master", str(remote_dir), cwd=tmp)
         _git_run("git", "init", "-b", "master", str(work_dir), cwd=tmp)
         (work_dir / "README.md").write_text("init\n", encoding="utf-8")
@@ -483,11 +521,15 @@ def test_fan_out_sequential_publish_produces_single_commit():
         _git_run("git", "remote", "add", "origin", str(remote_dir), cwd=work_dir)
         _git_run("git", "push", "-u", "origin", "master", cwd=work_dir)
 
-        # 真正的一次"新内容"：新增一篇文章文件，模拟这一轮fetch确实抓到了变化
-        (html_dir / "posts_index.html").write_text("<p>新文章</p>", encoding="utf-8")
+        # 真正的一次"新内容"：production html/（不是发布副本work_dir）
+        # 新增一篇文章文件，模拟这一轮fetch确实抓到了变化——必须经由
+        # rsync这一步才会出现在发布副本里，这正是这次架构改造要验证的路径。
+        (prod_html / "posts_index.html").write_text("<p>新文章</p>", encoding="utf-8")
 
         app_module.GITHUB_TOKEN = "fake-token"
-        app_module.BASE_DIR = work_dir
+        app_module.HTML_DIR = prod_html
+        app_module.GIT_PUBLISH_REPO_DIR = work_dir
+        app_module._sync_html_to_publish_repo = real_sync_fn
         app_module.github_actions.trigger_and_wait = lambda *a, **kw: {
             "outcome": "success", "run_id": 1, "run_html_url": "x",
         }
@@ -510,6 +552,8 @@ def test_fan_out_sequential_publish_produces_single_commit():
               (commits_before, commits_after))
         check("github和cf报告的是同一个commit_sha", github_result["body"]["commit"] == cf_result["body"]["commit"],
               (github_result["body"]["commit"], cf_result["body"]["commit"]))
+        check("发布副本(work_dir)真的通过rsync拿到了production的新文章",
+              (work_dir / "html" / "posts_index.html").exists())
     with_temp_app_env(_run)
 
 

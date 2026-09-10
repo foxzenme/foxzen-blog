@@ -3,10 +3,16 @@
 (data/favorite_blogs.txt)。
 
 范围说明（跟已完成的其它任务明确分开）：
-- quotes.txt的读取/随机选择逻辑(app.py::_random_quote())是既有代码，本次
-  未改动，这里主要是审计后补齐测试；唯一的真实代码改动是publish_build.py
-  的静态发布路径此前完全没有替换<!--QUOTE-->占位符（github.foxzen.me/
-  cf.foxzen.me上这行会显示成空的），这里一并测试新补上的替换逻辑。
+- quotes.txt在app.py(动态镜像mirror.foxzen.me，按请求实时读取)里的读取/
+  随机选择逻辑本次未改动，这里主要是既有审计测试。publish_build.py
+  (github.foxzen.me/cf.foxzen.me静态发布)这一侧有两轮真实代码改动：
+  第一轮(6ee00f0)补上了此前完全没有替换<!--QUOTE-->占位符的问题；第二轮
+  (这次)修复2026-09-07 d6213ee取消data/quotes.txt的Git tracking后，公开
+  仓库CI checkout里读不到这个文件、_random_quote()静默返回""导致的
+  daily-quote长期空白regression——现在会依次尝试data/quotes.txt→
+  data/quotes.txt.example，两者都拿不到非空格言时直接抛
+  QuoteSourceUnavailableError让构建失败，不再静默生成空白产物；
+  verify_publish()也新增了一道独立检查daily-quote是否为空的安全网。
 - favorite_blogs.txt是全新功能：fetch_blog.py::_parse_favorite_blogs()/
   _render_favorite_blogs_html()（渲染时机是fetch_blog.py抓取阶段一次性
   写入html/index.html，不是app.py按请求实时替换——因为内容本身不需要
@@ -96,12 +102,19 @@ def with_temp_html_dir(fn):
 
 def with_publish_build_fixture(fn):
     """跟test_publish_build.py同一个约定：重定向publish_build.HTML_DIR/
-    QUOTES_FILE指向一个最小的合成html/目录（只需要_build_index_html()
-    用到的几个占位符齐全，不需要真实文章）。"""
+    QUOTES_FILE/QUOTES_FILE_FALLBACK指向一个最小的合成html/目录（只需要
+    _build_index_html()用到的几个占位符齐全，不需要真实文章）。
+
+    QUOTES_FILE_FALLBACK也重定向到tmp下一个默认不存在的路径，而不是让它
+    继续指向仓库里真实的data/quotes.txt.example——否则"两者都不存在"这类
+    场景会意外读到仓库真实文件，测试结果依赖仓库当时的内容，不是自我
+    隔离的。需要真的测到fallback生效的测试自己显式创建这个路径的文件。
+    """
     import publish_build
     tmp = Path(tempfile.mkdtemp(prefix="homepage_content_publish_test_"))
     orig_html_dir = publish_build.HTML_DIR
     orig_quotes_file = publish_build.QUOTES_FILE
+    orig_quotes_fallback = publish_build.QUOTES_FILE_FALLBACK
     fixture_html = tmp / "html"
     fixture_html.mkdir()
     (fixture_html / "index.html").write_text(
@@ -114,12 +127,14 @@ def with_publish_build_fixture(fn):
     )
     publish_build.HTML_DIR = fixture_html
     publish_build.QUOTES_FILE = tmp / "quotes.txt"
+    publish_build.QUOTES_FILE_FALLBACK = tmp / "quotes.txt.example"
     output_dir = tmp / "publish_out"
     try:
         fn(tmp, output_dir, publish_build)
     finally:
         publish_build.HTML_DIR = orig_html_dir
         publish_build.QUOTES_FILE = orig_quotes_file
+        publish_build.QUOTES_FILE_FALLBACK = orig_quotes_fallback
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -201,22 +216,76 @@ def test_index_route_quote_is_html_escaped():
 # ============================================================
 
 def test_publish_build_substitutes_quote_placeholder():
+    """A. data/quotes.txt(真实/主数据源)存在时优先使用它，不读取example。"""
     def _run(tmp, output_dir, publish_build):
         publish_build.QUOTES_FILE.write_text("静态发布测试格言\n", encoding="utf-8")
+        publish_build.QUOTES_FILE_FALLBACK.write_text("不应该被用到的example格言\n", encoding="utf-8")
         content = publish_build._build_index_html("github.foxzen.me", output_dir)
         check("静态构建也替换了<!--QUOTE-->占位符", "静态发布测试格言" in content, content)
+        check("主数据源存在时不会读取example的内容",
+              "不应该被用到的example格言" not in content, content)
         check("不再残留字面量<!--QUOTE-->（此前的缺口：github.foxzen.me/"
               "cf.foxzen.me上这行此前会显示为空）", "<!--QUOTE-->" not in content)
     with_publish_build_fixture(_run)
 
 
-def test_publish_build_quote_missing_file_no_crash():
+def test_publish_build_quote_missing_primary_falls_back_to_example():
+    """B. data/quotes.txt不存在时，回退到公开的data/quotes.txt.example，
+    且fallback之后必须得到非空、有效的格言——对应github.foxzen.me/cf.foxzen.me
+    在公开仓库CI checkout里的真实情况（data/quotes.txt从2026-09-07 d6213ee
+    起就不再进入Git）。
+    """
     def _run(tmp, output_dir, publish_build):
-        # 不创建QUOTES_FILE
+        # 不创建QUOTES_FILE(主数据源)，只创建QUOTES_FILE_FALLBACK
+        publish_build.QUOTES_FILE_FALLBACK.write_text("公开模板格言\n", encoding="utf-8")
         content = publish_build._build_index_html("cf.foxzen.me", output_dir)
-        check("quotes.txt不存在时构建不报错", True)
-        check("占位符被替换成空字符串而不是保留原样",
-              "<!--QUOTE-->" not in content)
+        check("主数据源缺失时构建不报错(成功回退)", True)
+        check("回退读取到了example里的格言", "公开模板格言" in content, content)
+        check("占位符被真实替换，不残留字面量", "<!--QUOTE-->" not in content)
+    with_publish_build_fixture(_run)
+
+
+def test_publish_build_quote_both_sources_missing_raises():
+    """C. data/quotes.txt和data/quotes.txt.example都不存在时，必须明确
+    失败（抛QuoteSourceUnavailableError），不能静默生成空daily quote——
+    这正是2026-09-07 d6213ee之后实际发生、且构建全程不报错的那个regression。
+    """
+    def _run(tmp, output_dir, publish_build):
+        # 两个文件都不创建
+        raised = False
+        try:
+            publish_build._build_index_html("cf.foxzen.me", output_dir)
+        except publish_build.QuoteSourceUnavailableError as e:
+            raised = True
+            check("异常信息是固定安全短消息，不包含路径/真实内容",
+                  str(e) == "daily quote generation failed", str(e))
+        check("两个数据源都缺失时必须抛QuoteSourceUnavailableError，不能悄悄成功", raised)
+    with_publish_build_fixture(_run)
+
+
+def test_publish_build_quote_fallback_empty_file_raises():
+    """D. example文件存在但为空时，必须明确失败，不能输出空quote。"""
+    def _run(tmp, output_dir, publish_build):
+        publish_build.QUOTES_FILE_FALLBACK.write_text("", encoding="utf-8")
+        raised = False
+        try:
+            publish_build._build_index_html("cf.foxzen.me", output_dir)
+        except publish_build.QuoteSourceUnavailableError:
+            raised = True
+        check("example为空文件时必须抛异常，不能静默生成空quote", raised)
+    with_publish_build_fixture(_run)
+
+
+def test_publish_build_quote_fallback_whitespace_only_raises():
+    """E. example文件只有空白行时，跟"空文件"同样必须明确失败。"""
+    def _run(tmp, output_dir, publish_build):
+        publish_build.QUOTES_FILE_FALLBACK.write_text("\n   \n\t\n", encoding="utf-8")
+        raised = False
+        try:
+            publish_build._build_index_html("cf.foxzen.me", output_dir)
+        except publish_build.QuoteSourceUnavailableError:
+            raised = True
+        check("example只有空白行时必须抛异常，不能静默生成空quote", raised)
     with_publish_build_fixture(_run)
 
 
@@ -326,6 +395,149 @@ def test_verify_publish_rejects_leftover_quote_placeholder():
     finally:
         publish_build.HTML_DIR = orig_html_dir
         publish_build.QUOTES_FILE = orig_quotes_file
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_verify_publish_rejects_empty_daily_quote_even_without_leftover_placeholder():
+    """verify_publish()第二道安全网：即使<!--QUOTE-->占位符"被替换"了，
+    替换成的内容本身也可能是空字符串——上面那道"字面量占位符残留"检查
+    抓不到这种情况，但访客看到的结果同样是"🦊 "后面视觉上空白。
+
+    直接手写一份已经"构建完成"的产物(不经过_random_quote())来模拟这个
+    模式，证明这道检查独立生效——不依赖_random_quote()这次是否真的抛了
+    异常，防止以后有人在调用_random_quote()的地方意外catch掉那个异常又
+    当作空字符串处理，让同类缺口换一条路径重新出现。
+    """
+    import publish_build
+
+    real_html_dir = BASE_DIR / "html"
+    if not real_html_dir.exists():
+        print("  [跳过] 本地没有真实html/目录")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="homepage_content_verify_empty_quote_test_"))
+    html_dir = tmp / "html"
+    shutil.copytree(real_html_dir, html_dir)
+    orig_html_dir = publish_build.HTML_DIR
+    orig_quotes_file = publish_build.QUOTES_FILE
+    orig_quotes_fallback = publish_build.QUOTES_FILE_FALLBACK
+    try:
+        publish_build.HTML_DIR = html_dir
+        publish_build.QUOTES_FILE = tmp / "quotes.txt"
+        publish_build.QUOTES_FILE_FALLBACK = tmp / "quotes.txt.example"
+        publish_build.QUOTES_FILE.write_text("正常格言\n", encoding="utf-8")
+        out_dir = tmp / "publish_out_verify_empty_quote"
+        publish_build.build_publish("github.foxzen.me", out_dir)
+
+        # 人为把一份已经正确替换过的输出改回"空daily-quote"模式，绕开
+        # _random_quote()本身，只测verify_publish()这一侧的独立检测能力。
+        import re as _re
+        index_file = out_dir / "index.html"
+        poisoned = _re.sub(r'<p class="daily-quote">.*?</p>',
+                            '<p class="daily-quote">🦊 </p>',
+                            index_file.read_text(encoding="utf-8"), count=1)
+        index_file.write_text(poisoned, encoding="utf-8")
+
+        raised = False
+        message = ""
+        try:
+            publish_build.verify_publish(out_dir, "github.foxzen.me")
+        except publish_build.PublishVerificationError as e:
+            raised = True
+            message = str(e)
+        check("verify_publish()识别出daily-quote为空并拒绝通过（即使没有字面量占位符残留）", raised)
+        check("错误信息是安全短消息，不含真实格言内容", "daily quote generation failed" in message, message)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        publish_build.QUOTES_FILE = orig_quotes_file
+        publish_build.QUOTES_FILE_FALLBACK = orig_quotes_fallback
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_build_publish_with_fallback_quote_produces_nonempty_daily_quote():
+    """F. 静态build integration：完整跑一次build_publish()，主数据源缺失、
+    只有example可用时，最终产物的<p class="daily-quote">...</p>里必须有
+    非空内容，且verify_publish()必须能通过（证明修复后的整条链路是健康的，
+    不是只有_build_index_html()这一个内部函数层面正确）。
+    """
+    import publish_build
+
+    real_html_dir = BASE_DIR / "html"
+    if not real_html_dir.exists():
+        print("  [跳过] 本地没有真实html/目录")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="homepage_content_build_fallback_test_"))
+    html_dir = tmp / "html"
+    shutil.copytree(real_html_dir, html_dir)
+    orig_html_dir = publish_build.HTML_DIR
+    orig_quotes_file = publish_build.QUOTES_FILE
+    orig_quotes_fallback = publish_build.QUOTES_FILE_FALLBACK
+    try:
+        publish_build.HTML_DIR = html_dir
+        # 主数据源(QUOTES_FILE)故意不创建，模拟公开仓库CI checkout里
+        # data/quotes.txt不存在的真实情况。
+        publish_build.QUOTES_FILE = tmp / "quotes.txt"
+        publish_build.QUOTES_FILE_FALLBACK = tmp / "quotes.txt.example"
+        publish_build.QUOTES_FILE_FALLBACK.write_text("公开兜底格言用于集成测试\n", encoding="utf-8")
+        out_dir = tmp / "publish_out_build_fallback"
+        publish_build.build_publish("github.foxzen.me", out_dir)
+
+        index_html = (out_dir / "index.html").read_text(encoding="utf-8")
+        check("首页daily-quote包含fallback格言内容", "公开兜底格言用于集成测试" in index_html, index_html)
+        check("首页daily-quote不是空模式", not publish_build._DAILY_QUOTE_EMPTY_RE.search(index_html))
+
+        publish_build.verify_publish(out_dir, "github.foxzen.me")
+        check("verify_publish()对fallback产物通过检查（不因为用了fallback而被拒绝）", True)
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        publish_build.QUOTES_FILE = orig_quotes_file
+        publish_build.QUOTES_FILE_FALLBACK = orig_quotes_fallback
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_regression_missing_quotes_txt_no_longer_produces_blank_daily_quote():
+    """G. Regression test：专门复刻2026-09-07 d6213ee之后的真实故障场景——
+    data/quotes.txt不存在(未被Git track)、data/quotes.txt.example存在——
+    确认这次不会再回归到"🦊 "后面空白那个已经在生产环境实际发生过的状态。
+
+    跟test_build_publish_with_fallback_quote_produces_nonempty_daily_quote
+    覆盖同一条代码路径，但断言方式故意反过来写：直接断言那个具体的历史
+    故障字符串"<p class=\"daily-quote\">🦊 </p>"不会出现在任何输出.html里，
+    而不是只断言"有非空内容"——即使以后fallback逻辑本身被改写，只要它
+    重新产生了这个具体的空白模式，这个测试就应该失败。
+    """
+    import publish_build
+
+    real_html_dir = BASE_DIR / "html"
+    if not real_html_dir.exists():
+        print("  [跳过] 本地没有真实html/目录")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="homepage_content_regression_test_"))
+    html_dir = tmp / "html"
+    shutil.copytree(real_html_dir, html_dir)
+    orig_html_dir = publish_build.HTML_DIR
+    orig_quotes_file = publish_build.QUOTES_FILE
+    orig_quotes_fallback = publish_build.QUOTES_FILE_FALLBACK
+    try:
+        publish_build.HTML_DIR = html_dir
+        publish_build.QUOTES_FILE = tmp / "quotes.txt"  # 不创建：复刻CI checkout没有这个文件
+        publish_build.QUOTES_FILE_FALLBACK = tmp / "quotes.txt.example"
+        publish_build.QUOTES_FILE_FALLBACK.write_text("回归测试专用格言\n", encoding="utf-8")
+        out_dir = tmp / "publish_out_regression"
+        publish_build.build_publish("github.foxzen.me", out_dir)
+        publish_build.verify_publish(out_dir, "github.foxzen.me")
+
+        blank_pattern = '<p class="daily-quote">🦊 </p>'
+        for html_file in out_dir.rglob("*.html"):
+            text = html_file.read_text(encoding="utf-8")
+            check(f"{html_file.relative_to(out_dir)} 没有复现历史空白daily-quote模式",
+                  blank_pattern not in text, text[:200])
+    finally:
+        publish_build.HTML_DIR = orig_html_dir
+        publish_build.QUOTES_FILE = orig_quotes_file
+        publish_build.QUOTES_FILE_FALLBACK = orig_quotes_fallback
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -700,10 +912,16 @@ def main():
         test_index_route_substitutes_quote_placeholder,
         test_index_route_quote_is_html_escaped,
         test_publish_build_substitutes_quote_placeholder,
-        test_publish_build_quote_missing_file_no_crash,
+        test_publish_build_quote_missing_primary_falls_back_to_example,
+        test_publish_build_quote_both_sources_missing_raises,
+        test_publish_build_quote_fallback_empty_file_raises,
+        test_publish_build_quote_fallback_whitespace_only_raises,
         test_publish_build_quote_is_html_escaped,
         test_publish_build_404_page_quote_substituted_and_escaped,
         test_verify_publish_rejects_leftover_quote_placeholder,
+        test_verify_publish_rejects_empty_daily_quote_even_without_leftover_placeholder,
+        test_build_publish_with_fallback_quote_produces_nonempty_daily_quote,
+        test_regression_missing_quotes_txt_no_longer_produces_blank_daily_quote,
         test_favorite_blogs_normal_read,
         test_favorite_blogs_empty_file,
         test_favorite_blogs_comments_and_blank_lines_skipped,

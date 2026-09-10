@@ -49,6 +49,12 @@ MIRROR_ROOT_URL = "https://mirror.foxzen.me"
 # QUOTES_FILE`——原因跟上面BRAND_HEADING的说明一致：本文件设计成不依赖Flask/db，
 # 只读取磁盘上已有的静态文件本身。
 QUOTES_FILE = BASE_DIR / "data" / "quotes.txt"
+# data/quotes.txt是GreenCloud生产服务器上手工维护的私有数据，2026-09-07
+# d6213ee之后不再进入Git（见.gitignore），公开仓库的CI checkout里这个文件
+# 必然不存在。QUOTES_FILE_FALLBACK指向仓库里公开、已确认不含敏感信息的
+# 模板文件——内容就是d6213ee改名前那份旧的真实quotes.txt，只是从那次改名
+# 起改用做公开兜底模板，只在QUOTES_FILE不存在时才会被读取，见_random_quote()。
+QUOTES_FILE_FALLBACK = BASE_DIR / "data" / "quotes.txt.example"
 
 # 首页品牌文案的唯一权威定义跟fetch_blog.py的INDEX_TEMPLATE保持字面一致——
 # 如果那边的品牌文案再改，这里也要同步改。之所以在这里单独重复一份常量
@@ -316,6 +322,34 @@ def _normalize_brand_heading(content: str) -> str:
     return content
 
 
+class QuoteSourceUnavailableError(RuntimeError):
+    """QUOTES_FILE和QUOTES_FILE_FALLBACK都没能提供至少一条非空格言时抛出。
+
+    "daily quote永远留空"不该是一个能悄悄构建成功的状态——2026-09-07
+    d6213ee取消data/quotes.txt的Git tracking后，_random_quote()原有的
+    `except FileNotFoundError: return ""`在CI环境里从"几乎不会触发的
+    边界情况"变成了"每次构建都会触发的常态"，github.foxzen.me/cf.foxzen.me
+    因此持续发布"🦊 "后面空白的daily-quote，且整个构建过程不产生任何错误/
+    警告（P1修复见6ee00f0，那次修的是"占位符完全没被替换"，跟这次"占位符被
+    替换成空字符串"是两种不同的失效方式）。这里改成直接抛异常，让
+    publish_build.py在这一步硬失败，不再产生"看起来成功、实际daily quote
+    为空"的静态产物。
+    """
+
+
+def _read_quote_lines(path: Path) -> list:
+    """读一个格言文件，返回去掉首尾空白后剩下的非空行。
+
+    文件不存在时原样向上抛FileNotFoundError，不在这里吞掉——"文件不存在"
+    和"文件存在但内容全是空白行"必须能被调用方区分开：前者才应该继续尝试
+    下一个候选文件，后者说明这个候选已经"读到了但无效"，不应该被误判成
+    "还没试过、可以再试下一个"（QUOTES_FILE本身存在但为空时，就不会去读
+    QUOTES_FILE_FALLBACK——见_random_quote()）。
+    """
+    lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()]
+    return [ln for ln in lines if ln]
+
+
 def _random_quote() -> str:
     """跟app.py::_random_quote()同样的逻辑（读quotes.txt、按行随机挑一条），
     这里单独实现一份而不是导入app.py，理由同QUOTES_FILE：本文件不依赖Flask。
@@ -325,13 +359,25 @@ def _random_quote() -> str:
     这里不替换，这个HTML注释在浏览器里不会显示任何文字——"🦊 "后面永远是空的。
     静态构建按"每次构建选一条"处理（不是每个访客单独随机），这与Pages"构建一次、
     多个访客看到相同产物"的静态本质一致，不需要引入任何运行时JS来实现"随机"。
+
+    优先读QUOTES_FILE（生产真实数据）；只在它不存在（FileNotFoundError）时
+    才回退到QUOTES_FILE_FALLBACK（仓库里公开的模板）。两者都读不到至少
+    一条非空格言时抛QuoteSourceUnavailableError，不静默返回""——具体原因
+    见该异常类的docstring。
+
+    返回值只会是一条真实存在于某个文件里的格言原文，从不返回随机以外的
+    生成内容，调用方仍需要自己做html.escape()。
     """
     try:
-        lines = [ln.strip() for ln in QUOTES_FILE.read_text(encoding="utf-8").splitlines()]
-        lines = [ln for ln in lines if ln]
-        return random.choice(lines) if lines else ""
+        lines = _read_quote_lines(QUOTES_FILE)
     except FileNotFoundError:
-        return ""
+        try:
+            lines = _read_quote_lines(QUOTES_FILE_FALLBACK)
+        except FileNotFoundError:
+            lines = []
+    if not lines:
+        raise QuoteSourceUnavailableError("daily quote generation failed")
+    return random.choice(lines)
 
 
 def _build_index_html(host: str, output_dir: Path) -> str:
@@ -847,6 +893,15 @@ _DANGEROUS_SUFFIXES = (
     ".key", ".p12", ".pfx", ".secret", ".token", ".py",
 )
 _DANGEROUS_NAMES = {"id_rsa", "id_ed25519", "foxzen-download-admin.html"}
+# 第二道安全网专用：即使<!--QUOTE-->占位符"被替换"了，替换成的内容本身也
+# 可能是空字符串——这种情况上面那道"字面量占位符残留"检查抓不到，但访客
+# 看到的结果同样是"🦊 "后面视觉上空白，跟占位符没被替换效果一样，同样必须
+# 让构建失败（正是2026-09-07 d6213ee之后实际发生的情况：_random_quote()
+# 读不到data/quotes.txt时静默返回""，构建全程不报错）。_random_quote()
+# 现在已经改成读不到有效格言就直接抛异常，正常情况下不会再走到这个模式；
+# 这里独立复查一次最终产物本身，只是为了防止以后有人在调用_random_quote()
+# 的地方意外catch掉那个异常又当作空字符串处理，让同类缺口重新变得可能。
+_DAILY_QUOTE_EMPTY_RE = re.compile(r'<p class="daily-quote">🦊\s*</p>')
 _REQUIRED_FILES = ("index.html", "404.html", "robots.txt", "sitemap.xml", "CNAME",
                     "search-index.json", "pages-index.js",
                     # 下载功能是本轮明确声明的正式功能，不是可选增强——
@@ -910,13 +965,17 @@ def verify_publish(output_dir: Path, host: str) -> None:
             continue
         if p.suffix in _DANGEROUS_SUFFIXES or p.name in _DANGEROUS_NAMES:
             errors.append(f"发现危险文件: {p.relative_to(output_dir)}")
-        # 安全网：<!--QUOTE-->占位符曾经在index.html/404.html各自独立地
-        # 出现过"忘记替换"的问题（一次是完全没实现，一次是404页单独漏掉），
-        # 这里把"任意.html文件不应残留字面量占位符"做成构建时强制检查，
-        # 不再依赖人工记得每新增一个占位符消费点就同步补一处替换逻辑。
-        if p.suffix == ".html" and "<!--QUOTE-->" in p.read_text(encoding="utf-8"):
-            errors.append(f"{p.relative_to(output_dir)} 仍残留未替换的<!--QUOTE-->占位符"
-                          f"（发布后这个位置会显示为空）")
+        if p.suffix == ".html":
+            html_text = p.read_text(encoding="utf-8")
+            # 安全网：<!--QUOTE-->占位符曾经在index.html/404.html各自独立地
+            # 出现过"忘记替换"的问题（一次是完全没实现，一次是404页单独漏掉），
+            # 这里把"任意.html文件不应残留字面量占位符"做成构建时强制检查，
+            # 不再依赖人工记得每新增一个占位符消费点就同步补一处替换逻辑。
+            if "<!--QUOTE-->" in html_text:
+                errors.append(f"{p.relative_to(output_dir)} 仍残留未替换的<!--QUOTE-->占位符"
+                              f"（发布后这个位置会显示为空）")
+            if _DAILY_QUOTE_EMPTY_RE.search(html_text):
+                errors.append(f"{p.relative_to(output_dir)}: daily quote generation failed")
 
     # 下载功能完整性：每篇文章都必须有对应的离线standalone版本，固定范围的
     # 两个zip（全站/全部）必须存在且内容干净——这几项已经在_REQUIRED_FILES/

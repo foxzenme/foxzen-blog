@@ -58,30 +58,30 @@ def test_entries_block_present():
 def test_five_expected_domains_present():
     def _run(tmp):
         content = _generated_index_html(tmp)
-        for domain in ("foxzen.me", "backup.foxzen.me", "update.foxzen.me",
+        for domain in ("foxzen.me", "backup.foxzen.me", "status.foxzen.me",
                        "github.foxzen.me", "cf.foxzen.me"):
             check(f"页面提到域名: {domain}", domain in content)
     with_temp_html_dir(_run)
 
 
 def test_live_entries_are_real_https_links():
-    """已经真实部署验证过的入口(foxzen.me / backup.foxzen.me)必须是可点击的
-    <a href="https://...">链接，不能只是纯文字。"""
+    """已经真实部署验证过的入口(foxzen.me / backup.foxzen.me / github.foxzen.me /
+    cf.foxzen.me)必须是可点击的<a href="https://...">链接，不能只是纯文字。"""
     def _run(tmp):
         content = _generated_index_html(tmp)
-        for domain in ("foxzen.me", "backup.foxzen.me"):
+        for domain in ("foxzen.me", "backup.foxzen.me", "github.foxzen.me", "cf.foxzen.me"):
             needle = f'href="https://{domain}/"'
             check(f"{domain} 是https可点击链接: {needle}", needle in content)
     with_temp_html_dir(_run)
 
 
 def test_planned_entries_are_not_clickable_links():
-    """update.foxzen.me / github.foxzen.me / cf.foxzen.me目前没有任何nginx配置
-    或DNS(已通过检查nginx-conf/default.conf确认)，不能包在<a href>里，否则
-    点击后是无效地址——第六节明确要求不能这样做。"""
+    """status.foxzen.me的GreenCloud origin已经生成并返回200，但公网仍被既有
+    Cloudflare edge"本站暂时下线"规则拦截，因此仍不能算公网正式上线——不能包在
+    <a href>里，否则点击后访客看到的是那条edge拦截页而不是真正的status内容。"""
     def _run(tmp):
         content = _generated_index_html(tmp)
-        for domain in ("update.foxzen.me", "github.foxzen.me", "cf.foxzen.me"):
+        for domain in ("status.foxzen.me",):
             for scheme in ("http://", "https://"):
                 needle = f'href="{scheme}{domain}'
                 check(f"{domain} 没有被做成可点击链接: 不应出现 {needle}",

@@ -19,7 +19,9 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -1201,13 +1203,25 @@ def main():
     # 清除机制——两边都只按URL处理，不关心URL"为什么"变化，不需要为删除
     # 场景另写一套。IndexNow：告诉搜索引擎这个URL需要重新抓取（会发现已经
     # 404/410，进而从索引移除）。Cloudflare缓存清除：避免mirror.foxzen.me
-    # 边缘节点在文章已删除后仍继续返回旧的缓存内容。
+    # 边缘节点在文章已删除后仍继续返回旧的缓存内容——额外带上首页地址，因为
+    # 首页render_index()每次抓取都会重新生成（文章列表变了），IndexNow不需要
+    # 首页（首页本身不是"一篇内容"，不需要搜索引擎重新抓取通知），但Cloudflare
+    # 边缘缓存的首页确实需要跟着一起过期，否则读者刷新mirror.foxzen.me首页
+    # 看到的还是旧的文章列表。
+    #
+    # 完全没有文章变化时notify_urls为空，直接跳过，不调用_purge_cloudflare_
+    # cache()——不是"调用了但内部判断没有URL所以no-op"，是根本不发起这次
+    # 判断/请求，这样"skipped"和"success/failed"在下面的purge_summary里能
+    # 明确区分开（调用方视角的"没必要做" vs 被调用方视角的"想做但做不到"）。
     notify_urls = changed_urls + deleted_urls
     if notify_urls:
         _submit_indexnow(notify_urls)
-        _purge_cloudflare_cache(notify_urls)
+        purge_result = _purge_cloudflare_cache(notify_urls + [f"{MIRROR_ROOT_URL}/"])
+    else:
+        purge_result = {"status": "skipped", "reason": "no_change", "url_count": 0}
+    purge_summary = f"purge={purge_result['status']}:{purge_result['reason']}({purge_result['url_count']}url)"
     db.log_fetch_end(log_id, "ok",
-                      detail=f"changed={changed_count}, 删除={len(deleted)}, 无canonical={no_canonical_count}",
+                      detail=f"changed={changed_count}, 删除={len(deleted)}, 无canonical={no_canonical_count}, {purge_summary}",
                       post_count=len(entries))
     print(f"完成。共 {len(entries)} 篇，{changed_count} 篇有更新，{len(deleted)} 篇已删除，{no_canonical_count} 篇无法解析canonical_path。")
 
@@ -1315,19 +1329,19 @@ li {{ margin-bottom: 1em; }}
 <div class="entry-desc" data-i18n="entry_backup_desc">绕开 Cloudflare 直连 VPS 源站，主站/Cloudflare 访问异常时可以用这个地址确认源站本身是否正常。</div>
 </li>
 <li>
-<span class="entry-name entry-planned" data-i18n="entry_update_name">网站状态与公告（规划中，尚未上线）</span><br>
-<span class="entry-domain entry-planned">update.foxzen.me</span>
-<div class="entry-desc" data-i18n="entry_update_desc">用于发布维护、故障、恢复等系统级公告（不是文章更新记录），暂未正式部署。</div>
+<span class="entry-name entry-planned" data-i18n="entry_status_name">网站状态与公告（规划中，尚未上线）</span><br>
+<span class="entry-domain entry-planned">status.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_status_desc">用于发布维护、故障、恢复等系统级公告（不是文章更新记录），暂未正式部署。</div>
 </li>
 <li>
-<span class="entry-name entry-planned" data-i18n="entry_github_name">GitHub 静态镜像（规划中，尚未上线）</span><br>
-<span class="entry-domain entry-planned">github.foxzen.me</span>
-<div class="entry-desc" data-i18n="entry_github_desc">基于 GitHub Pages 的独立静态文章镜像，不依赖 VPS，暂未正式部署。</div>
+<a class="entry-name" href="https://github.foxzen.me/" target="_blank" rel="noopener" data-i18n="entry_github_name">GitHub 静态镜像</a><br>
+<span class="entry-domain">github.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_github_desc">基于 GitHub Pages 的独立静态文章镜像，不依赖 VPS。</div>
 </li>
 <li>
-<span class="entry-name entry-planned" data-i18n="entry_cf_name">Cloudflare 静态镜像（规划中，尚未上线）</span><br>
-<span class="entry-domain entry-planned">cf.foxzen.me</span>
-<div class="entry-desc" data-i18n="entry_cf_desc">基于 Cloudflare Pages 的第二个独立静态发布入口，暂未正式部署。</div>
+<a class="entry-name" href="https://cf.foxzen.me/" target="_blank" rel="noopener" data-i18n="entry_cf_name">Cloudflare 静态镜像</a><br>
+<span class="entry-domain">cf.foxzen.me</span>
+<div class="entry-desc" data-i18n="entry_cf_desc">基于 Cloudflare Pages 的第二个独立静态发布入口。</div>
 </li>
 </ul>
 </div>
@@ -1516,22 +1530,52 @@ CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 CF_ZONE_ID = os.environ.get("CF_ZONE_ID", "")
 
 
-def _purge_cloudflare_cache(urls):
-    """只清真正变化的URL在Cloudflare上的缓存，不是purge整站——
-    这样没变化的文章继续吃缓存加速，只有变了的这几篇立刻从Cloudflare上过期，
-    读者下一次请求就能拿到新版本，不用等2小时缓存自然过期。
-    只处理mirror.foxzen.me的地址，Blogger那些source_url不归这个Cloudflare zone管，
-    传过去也没用，这里先过滤掉。
-    失败不影响主流程，网络问题/token过期这种不该打断整个抓取任务。
+def _purge_cloudflare_cache(urls, *, api_url=None, timeout=15):
+    """只清真正变化的URL(含首页)在Cloudflare上的缓存，不是purge整站——
+    这样没变化的文章继续吃缓存加速，只有变了的这几篇+首页立刻从Cloudflare
+    上过期，读者下一次请求就能拿到新版本，不用等缓存自然过期。
+    只处理mirror.foxzen.me的地址，Blogger那些source_url不归这个Cloudflare
+    zone管，传过去也没用，这里先过滤掉；顺便去重——理论上changed_urls/
+    deleted_urls不会有重复，但URL purge请求本身不应该依赖调用方保证这点。
+
+    失败不影响主流程：本函数内部吞掉所有异常，绝不向上raise，因为这一步
+    只是"让CDN尽快看到新内容"，网络问题/token过期这类瞬时或配置问题不该
+    打断整个抓取任务，更不能让已经成功写盘的production HTML被这里的失败
+    连累回滚。调用方通过返回值里的status/reason决定怎么记录，而不是靠
+    try/except——这样"跳过/成功/失败"三态在fetch_log.detail里能被区分，
+    而不是原来那样全部沉默处理、外部完全看不出Cloudflare那一步到底发生
+    了什么。
+
+    api_url参数只为测试存在，生产环境不传、默认走真实Cloudflare地址；
+    测试传入本地http.server地址——跟cron_refresh_mirror.py::_post_refresh()
+    的api_url参数同一个约定，不引入mock框架。timeout同理，测试可以传更短
+    的值，不必真的等15秒才能验证超时分支。
+
+    返回 {"status": "skipped"|"success"|"failed", "reason": <短代码>,
+          "url_count": int}：
+      - status=skipped: reason取值 no_token / no_zone_id / no_urls
+        （token/zone未配置，或者过滤+去重后已经没有mirror.foxzen.me的
+        URL需要处理）——这三种情况下面根本不会发起HTTP请求。
+      - status=success: reason固定为ok。
+      - status=failed: reason取值 timeout / network_error / invalid_request
+        （Cloudflare返回4xx里的400，通常是请求体本身有问题）/ http_error
+        （其它HTTP错误状态码）/ invalid_response（响应不是合法JSON）/
+        api_rejected（HTTP 200但响应体success=false，比如token权限不够）/
+        unexpected_error（未归类的异常，兜底）。
+    reason只是固定短代码，不含任何Cloudflare原始响应文本或token，调用方
+    可以放心拼进fetch_log.detail（这个detail会经/api/health原样对外暴露，
+    见app.py health()）。
     """
+    mirror_urls = list(dict.fromkeys(u for u in urls if u.startswith(MIRROR_ROOT_URL)))
     if not CF_API_TOKEN or not CF_ZONE_ID:
-        return
-    mirror_urls = [u for u in urls if u.startswith(MIRROR_ROOT_URL)]
+        return {"status": "skipped", "reason": "no_token" if not CF_API_TOKEN else "no_zone_id", "url_count": 0}
     if not mirror_urls:
-        return
+        return {"status": "skipped", "reason": "no_urls", "url_count": 0}
+
+    request_url = api_url or f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/purge_cache"
     try:
         req = urllib.request.Request(
-            f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/purge_cache",
+            request_url,
             data=json.dumps({"files": mirror_urls}).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -1539,14 +1583,36 @@ def _purge_cloudflare_cache(urls):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("success"):
-                print(f"  [Cloudflare] 已清除{len(mirror_urls)}个URL的缓存")
-            else:
-                print(f"  [Cloudflare] 清缓存请求被拒绝: {result.get('errors')}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except socket.timeout:
+        print("  [Cloudflare] 清缓存超时（不影响本次抓取其他流程）")
+        return {"status": "failed", "reason": "timeout", "url_count": len(mirror_urls)}
+    except urllib.error.HTTPError as e:
+        reason = "invalid_request" if e.code == 400 else "http_error"
+        print(f"  [Cloudflare] 清缓存HTTP错误 {e.code}（不影响本次抓取其他流程）")
+        return {"status": "failed", "reason": reason, "url_count": len(mirror_urls)}
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, socket.timeout):
+            print("  [Cloudflare] 清缓存超时（不影响本次抓取其他流程）")
+            return {"status": "failed", "reason": "timeout", "url_count": len(mirror_urls)}
+        print(f"  [Cloudflare] 清缓存网络错误（不影响本次抓取其他流程）: {e.reason}")
+        return {"status": "failed", "reason": "network_error", "url_count": len(mirror_urls)}
     except Exception as e:
         print(f"  [Cloudflare] 清缓存失败（不影响本次抓取其他流程）: {e}")
+        return {"status": "failed", "reason": "unexpected_error", "url_count": len(mirror_urls)}
+
+    try:
+        result = json.loads(raw)
+    except ValueError:
+        print("  [Cloudflare] 清缓存响应无法解析（不影响本次抓取其他流程）")
+        return {"status": "failed", "reason": "invalid_response", "url_count": len(mirror_urls)}
+
+    if result.get("success"):
+        print(f"  [Cloudflare] 已清除{len(mirror_urls)}个URL的缓存")
+        return {"status": "success", "reason": "ok", "url_count": len(mirror_urls)}
+    print(f"  [Cloudflare] 清缓存请求被拒绝: {result.get('errors')}")
+    return {"status": "failed", "reason": "api_rejected", "url_count": len(mirror_urls)}
 
 
 def _submit_indexnow(urls):

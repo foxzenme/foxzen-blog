@@ -45,6 +45,7 @@ _SAFE_FAILURE_DETAIL_BY_CATEGORY = {
     "actions_run_failed": "GitHub Actions 执行失败",
     "actions_run_unresolved": "任务超时",
     "internal_error": "服务器处理时发生未预期错误",
+    "cache_purge_failed": "缓存刷新失败，请稍后再试",
 }
 _GENERIC_FAILURE_DETAIL = "任务失败"
 _GENERIC_SUCCESS_DETAIL = "任务成功"

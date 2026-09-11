@@ -76,6 +76,10 @@ DISK_ALERT_THRESHOLD = 0.80
 # 来源。旧文件本身不会被这里的代码删除。
 CONTENT_FETCH_LOCK = "content_fetch"          # 4个target都要先跑一次fetch_blog.py，共享这把锁
 GIT_PUBLISH_LOCK = "git_publish"              # github/cf共享："把html/变化commit+push"这把锁
+MANUAL_PURGE_LOCK = "manual_purge"            # 公共"刷新本站缓存"按钮专用的独立锁（POST /api/purge-cache）：
+                                               # 这个操作只是一次Cloudflare purge_cache API调用，不碰html/、
+                                               # 不碰git工作区，跟content_fetch/git_publish没有撕裂读风险，
+                                               # 不需要cross_check_idle互斥，用一把独立的锁就够了。
 FETCH_SUBPROCESS_TIMEOUT_SECONDS = 300         # 与下面subprocess.run(fetch_blog.py)的timeout保持一致
 CONTENT_FETCH_STALE_SECONDS = FETCH_SUBPROCESS_TIMEOUT_SECONDS + 120   # 420，判定死锁年龄阈值，留2分钟余量
 GIT_PUSH_TIMEOUT_SECONDS = 60                  # git push本身的subprocess超时
@@ -94,6 +98,17 @@ GIT_PUSH_TIMEOUT_SECONDS = 60                  # git push本身的subprocess超�
 # 合计290秒。留130秒余量（覆盖磁盘/CPU繁忙时的额外调度延迟，以及SQLite
 # BEGIN IMMEDIATE本身等待写锁的时间），取整420秒。
 GIT_PUBLISH_STALE_SECONDS = 420
+# MANUAL_PURGE_LOCK的冷却/stale两个数值：cooldown故意跟mirror/backup/github/cf
+# 四个公开入口保持一致的300秒（5分钟）——这是你明确要求的取舍，不是按"一次
+# Cloudflare调用最多15秒"单独推算出的更短数值；语义是"5分钟内不能重复真正
+# 执行一次purge"，不是"每5分钟无条件purge一次"（真正要不要purge由
+# app.py::_manual_purge_pending_change()先判断，判断为"无需purge"时根本不会
+# 走到这把锁，见purge_cache()）。stale_after_seconds=60远小于content_fetch的
+# 420：这把锁保护的临界区只是一次_purge_cloudflare_cache()调用，其内部
+# HTTP请求timeout=15秒，60秒已经是充分余量，不需要套用content_fetch那种
+# 要覆盖完整subprocess抓取流程的量级。
+MANUAL_PURGE_COOLDOWN_SECONDS = 300
+MANUAL_PURGE_STALE_SECONDS = 60
 GIT_PUBLISH_RSYNC_TIMEOUT_SECONDS = 120        # rsync production html/ -> 发布副本html/ 的subprocess超时
 GITHUB_ACTIONS_WAIT_SECONDS = 90               # 同步HTTP请求里有界轮询Actions conclusion的上限，超过就返回202/running
 # 90秒有界等待到期只是这次HTTP请求不再继续占用gunicorn worker等下去，不代表
@@ -834,6 +849,119 @@ def refresh_target_options(target):
     # 实际CORS响应头由_apply_refresh_cors()这个after_request钩子统一加，
     # 这里只需要针对预检请求返回一个空的成功响应。
     return Response(status=204)
+
+
+def _manual_purge_pending_change():
+    """判断当前是否存在"真实内容变化、且尚未成功purge过"——只依据fetch_log
+    这一份权威记录(db.get_last_completed_fetch_log())，不用html文件mtime
+    这类容易被无关操作(比如rsync/重新渲染)扰动的间接信号去猜。
+
+    返回 (pending: bool, row: dict | None)：
+      pending=False, row=None      —— 从来没有过任何一次完成的抓取。
+      pending=False, row=最近一条  —— 那次抓取changed_count/deleted_count
+        都是0(真的没有变化)，或者purge_status已经是'success'(变化已经被
+        purge过，不管是hourly cron自动purge的，还是本按钮更早一次点击
+        purge的，见db.record_manual_purge_result())——两种情况对访客来说
+        都应该no-op，不需要在HTTP层面区分。
+      pending=True,  row=最近一条  —— 存在真实变化且还没成功purge过，
+        purge_cache()应该真正申请MANUAL_PURGE_LOCK并触发一次purge。
+    """
+    row = db.get_last_completed_fetch_log()
+    if row is None:
+        return False, None
+    has_change = (row.get("changed_count") or 0) > 0 or (row.get("deleted_count") or 0) > 0
+    if not has_change:
+        return False, row
+    if row.get("purge_status") == "success":
+        return False, row
+    return True, row
+
+
+@app.route("/api/purge-cache", methods=["POST"])
+def purge_cache():
+    """公共匿名"刷新本站缓存"按钮——Cloudflare CDN缓存的人工兜底入口。
+
+    刻意不是什么：不触发Blogger抓取(不调用_run_content_fetch()/
+    fetch_blog.main())、不commit/不push、不触发GitHub Actions/Cloudflare
+    Pages部署。只在_manual_purge_pending_change()确认存在真实的、尚未
+    成功purge过的内容变化(新增/修改/删除文章)时，才复用现有
+    fetch_blog._purge_cloudflare_cache()做一次URL purge，绝不新写一个
+    Cloudflare API client，也绝不用purge_everything。
+
+    只放在mirror.foxzen.me/backup.foxzen.me自己的首页上（同源POST，见
+    static/index.js::buildCachePurgeWidget()），不给github.foxzen.me/
+    cf.foxzen.me做跨域按钮，所以不需要像/api/refresh/*那样接入
+    _apply_refresh_cors()的CORS白名单。
+    """
+    pending, row = _manual_purge_pending_change()
+    if not pending:
+        return jsonify({"status": "no_changes", "detail": "当前没有新的内容变化，无需刷新缓存。"}), 200
+
+    acquire = db.try_acquire_lock(
+        MANUAL_PURGE_LOCK, MANUAL_PURGE_STALE_SECONDS,
+        target_key=MANUAL_PURGE_LOCK, cooldown_seconds=MANUAL_PURGE_COOLDOWN_SECONDS,
+        triggered_by="manual_purge",
+    )
+    if not acquire["acquired"]:
+        reason = acquire["reason"]
+        if reason == "cooldown":
+            return jsonify({
+                "status": "cooldown", "cooldown_remaining_seconds": acquire["cooldown_remaining_seconds"],
+            }), 429
+        return jsonify({
+            "status": "busy", "reason": reason,
+            "detail": "缓存刷新正在被另一次请求占用，请稍后重试",
+        }), 409
+
+    fetch_blog = None
+    status, reason, url_count = "unexpected_error", "", 0
+    try:
+        # 惰性import：fetch_blog.py模块顶层有一行`from app import _inline_post_as_base64`
+        # （反向依赖app.py本身）。如果这里改成在app.py模块顶层写`import fetch_blog`，
+        # gunicorn启动时最先加载的是app.py，会在_inline_post_as_base64这个名字
+        # 真正定义出来之前就触发fetch_blog.py那一行，形成循环导入报错
+        # （ImportError: cannot import name ... from partially initialized module）。
+        # 放进函数体内、首次真正处理这个请求时才import，此时app.py早已经完整
+        # 加载完毕，不会触发这个问题——这不是风格偏好，是绕开这个真实存在的
+        # 循环依赖的必需写法，import之后Python会缓存模块，后续每次请求这一行
+        # 只是一次sys.modules查表，没有重复执行fetch_blog.py顶层代码的开销。
+        # 特意放在这个try块内部（而不是acquire成功之后、try之外）：万一这次
+        # import本身抛异常，也必须走到下面的finally释放MANUAL_PURGE_LOCK，
+        # 不能让锁卡在running直到60秒stale阈值才自动恢复。
+        import fetch_blog
+        urls = [f"{fetch_blog.MIRROR_ROOT_URL}/"] + [
+            f"{fetch_blog.MIRROR_ROOT_URL}/{p['canonical_path']}.html"
+            for p in db.get_all_posts() if p.get("canonical_path")
+        ]
+        purge_result = fetch_blog._purge_cloudflare_cache(urls)
+        status, reason, url_count = purge_result["status"], purge_result["reason"], purge_result["url_count"]
+    except Exception as e:
+        # _purge_cloudflare_cache()自己的文档约定是"绝不向上抛异常"（见
+        # fetch_blog.py），所以这里只会在上面的import fetch_blog本身、或
+        # db.get_all_posts()之类的周边代码意外出错时触发——防御性兜底，
+        # 不能让这个匿名公开端点因为一个未预期异常变成裸500。特意redact
+        # fetch_blog.CF_API_TOKEN而不是本模块顶部那份app.py自己的
+        # CF_API_TOKEN：两者生产环境下确实读的是同一个环境变量、值相同，
+        # 但真正会出现在这段异常文本里的密钥，只可能来自fetch_blog这次
+        # 实际发起Cloudflare调用所用的那一份——直接对它redact，不依赖
+        # "两份copy恰好相等"这个间接、容易在未来悄悄失效的假设（写测试时
+        # 用两个不同的假值验证过这个区别）。用getattr()而不是直接访问
+        # fetch_blog.CF_API_TOKEN：上面的import fetch_blog本身也在这个
+        # try块保护范围内，如果就是它抛的异常，这里的fetch_blog仍然是
+        # try之前预置的None，直接取属性会在异常处理过程中再抛一次
+        # AttributeError，getattr()的默认值分支保证这里不会二次出错。
+        reason = safe_errors.redact_known_secrets(str(e), getattr(fetch_blog, "CF_API_TOKEN", ""))
+    finally:
+        db.release_lock(MANUAL_PURGE_LOCK, acquire["generation"], status, reason)
+
+    if status == "success":
+        db.record_manual_purge_result(row["id"], status, reason, url_count)
+        return jsonify({"status": "success", "detail": "缓存已刷新为最新版本。", "url_count": url_count}), 200
+
+    return jsonify({
+        "status": "failure",
+        "detail": safe_errors.safe_public_detail("failure", "cache_purge_failed"),
+    }), 200
 
 
 @app.after_request

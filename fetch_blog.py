@@ -1222,7 +1222,10 @@ def main():
     purge_summary = f"purge={purge_result['status']}:{purge_result['reason']}({purge_result['url_count']}url)"
     db.log_fetch_end(log_id, "ok",
                       detail=f"changed={changed_count}, 删除={len(deleted)}, 无canonical={no_canonical_count}, {purge_summary}",
-                      post_count=len(entries))
+                      post_count=len(entries),
+                      changed_count=changed_count, deleted_count=len(deleted),
+                      purge_status=purge_result["status"], purge_reason=purge_result["reason"],
+                      purge_url_count=purge_result["url_count"])
     print(f"完成。共 {len(entries)} 篇，{changed_count} 篇有更新，{len(deleted)} 篇已删除，{no_canonical_count} 篇无法解析canonical_path。")
 
 

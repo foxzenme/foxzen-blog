@@ -150,6 +150,13 @@
       export_all_btn: "导出离线版(全部)",
       refresh_label: "内容刷新",
       refreshing_text: "刷新中...",
+      cache_purge_hint: "本站内容刚刚更新但仍显示旧版本时，可尝试刷新缓存。",
+      cache_purge_btn: "刷新本站缓存",
+      cache_purge_checking_text: "检查中...",
+      cache_purge_no_changes_text: "当前没有新的内容变化，无需刷新缓存。",
+      cache_purge_success_text: "缓存已刷新为最新版本。",
+      cache_purge_failure_text: "刷新缓存失败，请稍后再试。",
+      cache_purge_busy_text: "已有一次刷新正在进行，请稍后再试。",
       prev_page: "← 上一页",
       next_page: "下一页 →",
       stats_post_count_value: (count) => `${count} 篇`,
@@ -231,6 +238,13 @@
       export_all_btn: "Export offline (all)",
       refresh_label: "Content refresh",
       refreshing_text: "Refreshing...",
+      cache_purge_hint: "If the site was just updated but still shows an old version, try refreshing the cache.",
+      cache_purge_btn: "Refresh site cache",
+      cache_purge_checking_text: "Checking...",
+      cache_purge_no_changes_text: "There are no new content changes right now, no need to refresh the cache.",
+      cache_purge_success_text: "The cache has been refreshed to the latest version.",
+      cache_purge_failure_text: "Failed to refresh the cache, please try again later.",
+      cache_purge_busy_text: "A refresh is already in progress, please try again shortly.",
       prev_page: "← Prev",
       next_page: "Next →",
       stats_post_count_value: (count) => `${count}`,
@@ -575,6 +589,27 @@
   // 走绝对地址+CORS，是完全独立的另一份实现，这里不复用）。
   const REFRESH_TARGETS = ["mirror", "backup", "github", "cf"];
 
+  // 公共"刷新本站缓存"按钮：面向普通访客，不是上面buildRefreshWidget()那4个
+  // 偏技术向的target刷新入口——文案刻意不提Cloudflare/CDN/Purge这类术语，
+  // 只描述"页面还是旧版本时可以点这个"。点击只会POST /api/purge-cache，
+  // 后端会先判断是否存在真实内容变化、且该变化尚未被成功purge过，没有才
+  // 会真的调用Cloudflare（见app.py::purge_cache()），这里的JS本身不做任何
+  // "要不要刷新"的判断，只负责发请求和展示结果。
+  function buildCachePurgeWidget() {
+    const wrap = el("div", { style: "margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;" });
+    const hint = el("div", {
+      style: "font-size:0.85em;color:#666;margin-bottom:8px;",
+      text: "本站内容刚刚更新但仍显示旧版本时，可尝试刷新缓存。",
+      "data-i18n": "cache_purge_hint",
+    });
+    const btn = el("button", { type: "button", text: "刷新本站缓存", "data-i18n": "cache_purge_btn" });
+    btn.onclick = () => doPurgeCache(btn);
+
+    wrap.appendChild(hint);
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
   function buildRefreshWidget() {
     const wrap = el("div", { style: "margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;" });
     const label = el("div", { style: "font-size:0.9em;color:#666;margin-bottom:8px;", text: "内容刷新", "data-i18n": "refresh_label" });
@@ -736,6 +771,36 @@
     return location.hostname === "backup.foxzen.me" ? "backup" : "mirror";
   }
 
+  // POST /api/purge-cache：响应形状见app.py::purge_cache() —— 429=5分钟冷却中，
+  // 409=已有另一次刷新正在进行(锁被占用)，200且status="no_changes"=检查过了，
+  // 没有需要刷新的新变化(不是失败)，200且status="success"=真的刷新了，
+  // 200且status其它值(如"failure")=Cloudflare那一步失败。跟doRefresh()一样
+  // 用alert()展示结果，不引入新的状态UI组件。
+  async function doPurgeCache(btn) {
+    btn.disabled = true;
+    btn.textContent = homeT("cache_purge_checking_text");
+    try {
+      const resp = await fetch("/api/purge-cache", { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 429) {
+        alert(homeT("alert_cooldown")(data.cooldown_remaining_seconds));
+      } else if (resp.status === 409) {
+        alert(homeT("cache_purge_busy_text"));
+      } else if (data.status === "no_changes") {
+        alert(homeT("cache_purge_no_changes_text"));
+      } else if (data.status === "success") {
+        alert(homeT("cache_purge_success_text"));
+      } else {
+        alert(homeT("cache_purge_failure_text"));
+      }
+    } catch (e) {
+      alert(homeT("alert_request_failed")(e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = homeT("cache_purge_btn");
+    }
+  }
+
   async function doDownloadSelected() {
     if (state.selected.size === 0) {
       alert(homeT("alert_select_one_post"));
@@ -811,6 +876,7 @@
 
   applyHomepageI18n();
   wireLangToggle();
+  app.appendChild(buildCachePurgeWidget());
   app.appendChild(buildRefreshWidget());
   app.appendChild(buildArchiveFilterBar());
   app.appendChild(buildToolbar());

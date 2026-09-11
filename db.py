@@ -221,6 +221,21 @@ def init_db():
         print("[迁移] posts表已添加 published_ts 字段（完整时间戳，专门用于排序，"
               "不影响published字段原有的显示/筛选逻辑）")
 
+    # 公共"刷新本站缓存"按钮（manual purge）用这5列判断"最近一次抓取到底有没有
+    # 真实内容变化、这个变化有没有被成功purge过"——不解析detail自由文本。
+    # purge_status/purge_reason/purge_url_count跟自动purge共用同一套取值
+    # （success/failed/skipped，见fetch_blog.py::_purge_cloudflare_cache()），
+    # 手动按钮purge成功后也会写回这三列（见record_manual_purge_result()），
+    # 这样"这条变化有没有被purge过"永远只有这一份权威答案，不区分是自动
+    # 触发的还是手动点按钮触发的。
+    for col, coltype in (
+        ("changed_count", "INTEGER"), ("deleted_count", "INTEGER"),
+        ("purge_status", "TEXT"), ("purge_reason", "TEXT"), ("purge_url_count", "INTEGER"),
+    ):
+        if not _column_exists(conn, "fetch_log", col):
+            conn.execute(f"ALTER TABLE fetch_log ADD COLUMN {col} {coltype}")
+            print(f"[迁移] fetch_log表已添加 {col} 字段")
+
     if not _column_exists(conn, "refresh_locks", "generation"):
         conn.execute("ALTER TABLE refresh_locks ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
         print("[迁移] refresh_locks表已添加 generation 字段（fencing token）")
@@ -985,13 +1000,25 @@ def log_fetch_start():
     return log_id
 
 
-def log_fetch_end(log_id, status, detail="", post_count=0):
+def log_fetch_end(log_id, status, detail="", post_count=0, *,
+                   changed_count=None, deleted_count=None,
+                   purge_status=None, purge_reason=None, purge_url_count=None):
+    """changed_count/deleted_count/purge_*五个参数留空(None，默认)时保持
+    旧行为不变——目前只有fetch_blog.py::main()的抓取失败早退分支
+    (fetch_all_entries()异常)会不传这几个参数，那种情况下确实没有changed/
+    purge相关的数字可记。main()正常跑完的成功分支会传全这5个值（见调用点），
+    供公共"刷新本站缓存"按钮的_manual_purge_pending_change()判断用，不需要
+    改动上面任何抓取/变更检测/purge决策逻辑本身，纯粹是把已经算出来的数字
+    多存一份结构化字段，而不是让调用方去正则解析detail这段自由文本。
+    """
     conn = get_conn()
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute("""
-        UPDATE fetch_log SET finished_at=?, status=?, detail=?, post_count=?
+        UPDATE fetch_log SET finished_at=?, status=?, detail=?, post_count=?,
+            changed_count=?, deleted_count=?, purge_status=?, purge_reason=?, purge_url_count=?
         WHERE id=?
-    """, (now, status, detail, post_count, log_id))
+    """, (now, status, detail, post_count, changed_count, deleted_count,
+          purge_status, purge_reason, purge_url_count, log_id))
     conn.commit()
     conn.close()
 
@@ -1001,6 +1028,43 @@ def get_last_fetch_status():
     row = conn.execute("SELECT * FROM fetch_log ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_last_completed_fetch_log():
+    """最近一次已经完成(非running)的抓取记录，供公共"刷新本站缓存"按钮判断
+    "当前是否存在尚未清理的真实内容变化"用。用status!='running'过滤，避免
+    在一次抓取正在进行的短暂窗口内，误读到那一条finished_at/purge_status
+    都还是NULL的进行中记录（log_fetch_start()先插入status='running'的行，
+    main()跑完后log_fetch_end()才更新，两者之间正常只有几秒到几十秒，见
+    fetch_blog.py::main()）。
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM fetch_log WHERE status != 'running' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def record_manual_purge_result(log_id, purge_status, purge_reason, purge_url_count):
+    """公共"刷新本站缓存"按钮真正成功调用过一次Cloudflare purge之后，把结果
+    写回它当时依据的那条fetch_log行——复用跟自动purge完全相同的
+    purge_status/purge_reason/purge_url_count三列，让"这条变化到底有没有被
+    purge过"永远只有fetch_log这一份权威记录，不必区分这次purge是hourly
+    cron自动触发的，还是访客手动点按钮触发的。只在按钮这次真的执行成功时
+    调用（见app.py::purge_cache()）——失败不改写这一行：失败前这一行本来
+    就已经如实记录着"还没被成功purge"，这个结论在失败之后仍然成立，不需要
+    额外写一次同样的结论；失败的具体原因走既有的refresh_locks.last_detail
+    诊断记录（跟_run_content_fetch()/_run_git_publish()同一个既有模式），
+    不需要在fetch_log这张"业务结果"表里叠加"每次尝试"的日志。
+    """
+    conn = get_conn()
+    conn.execute(
+        "UPDATE fetch_log SET purge_status=?, purge_reason=?, purge_url_count=? WHERE id=?",
+        (purge_status, purge_reason, purge_url_count, log_id),
+    )
+    conn.commit()
+    conn.close()
 
 def assign_missing_numbers():
     conn = get_conn()

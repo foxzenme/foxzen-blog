@@ -157,6 +157,7 @@
       cache_purge_success_text: "缓存已刷新为最新版本。",
       cache_purge_failure_text: "刷新缓存失败，请稍后再试。",
       cache_purge_busy_text: "已有一次刷新正在进行，请稍后再试。",
+      random_article_btn: "随机文章",
       prev_page: "← 上一页",
       next_page: "下一页 →",
       stats_post_count_value: (count) => `${count} 篇`,
@@ -245,6 +246,7 @@
       cache_purge_success_text: "The cache has been refreshed to the latest version.",
       cache_purge_failure_text: "Failed to refresh the cache, please try again later.",
       cache_purge_busy_text: "A refresh is already in progress, please try again shortly.",
+      random_article_btn: "Random article",
       prev_page: "← Prev",
       next_page: "Next →",
       stats_post_count_value: (count) => `${count}`,
@@ -595,6 +597,15 @@
   // 后端会先判断是否存在真实内容变化、且该变化尚未被成功purge过，没有才
   // 会真的调用Cloudflare（见app.py::purge_cache()），这里的JS本身不做任何
   // "要不要刷新"的判断，只负责发请求和展示结果。
+  // 公共"随机文章"入口：纯页面跳转，不发起任何/api/*请求，所以不需要
+  // onclick/fetch逻辑——一个普通<a href="/random">就够了，服务端
+  // app.py::random_article()负责302到具体某一篇文章。
+  function buildRandomArticleWidget() {
+    const wrap = el("div", { style: "margin-bottom:20px;" });
+    wrap.appendChild(el("a", { href: "/random", text: "随机文章", "data-i18n": "random_article_btn" }));
+    return wrap;
+  }
+
   function buildCachePurgeWidget() {
     const wrap = el("div", { style: "margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;" });
     const hint = el("div", {
@@ -876,6 +887,7 @@
 
   applyHomepageI18n();
   wireLangToggle();
+  app.appendChild(buildRandomArticleWidget());
   app.appendChild(buildCachePurgeWidget());
   app.appendChild(buildRefreshWidget());
   app.appendChild(buildArchiveFilterBar());

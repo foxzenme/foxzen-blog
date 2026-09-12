@@ -90,6 +90,7 @@ SEARCH_TOOLBAR_HTML = """<div id="pages-search-toolbar" style="margin-bottom:20p
 <input type="date" data-role="from" style="padding:6px;">
 <input type="date" data-role="to" style="padding:6px;">
 <button data-role="search-btn" data-i18n="search_btn">搜索</button>
+<button type="button" data-role="random-btn" data-i18n="random_article_btn">随机文章</button>
 <select data-role="page-size" style="padding:6px;">
 <option value="10" data-i18n="page_size_10">每页10篇</option>
 <option value="20" data-i18n="page_size_20">每页20篇</option>

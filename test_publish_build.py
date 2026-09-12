@@ -830,6 +830,79 @@ def test_pages_index_js_filter_logic_via_node():
         check(f"pages-index.js真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
 
 
+def test_pages_index_js_random_article_logic_via_node():
+    """"随机文章"按钮的纯函数(pickRandomArticle)真实JS行为验证，跟
+    test_pages_index_js_filter_logic_via_node()同一个精神：不需要起浏览器，
+    用node直接require pages-index.js执行它导出的纯函数。"""
+    import re
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过pages-index.js随机文章逻辑的真实JS行为验证")
+        return
+
+    js_path = (Path(__file__).parent / "static_pages" / "pages-index.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+
+    snippet = f"""
+    const P = require("{js_path_js}");
+    const articles = [
+      {{id:"1", title:"A", url:"/2026/01/a.html", date:"2026-01-01", tags:[], text:""}},
+      {{id:"2", title:"B", url:"/2026/02/b.html", date:"2026-02-01", tags:[], text:""}},
+      {{id:"3", title:"C", url:"/2026/03/c.html", date:"2026-03-01", tags:[], text:""}},
+    ];
+
+    // 1. 多次调用，返回值必须始终是articles数组里的某一项
+    let allFromSet = true;
+    for (let i = 0; i < 50; i++) {{
+      const picked = P.pickRandomArticle(articles);
+      if (articles.indexOf(picked) === -1) allFromSet = false;
+    }}
+    console.log("random_pick_always_from_set", allFromSet);
+
+    // 2. 单元素数组：必须每次都返回那一个
+    const single = [articles[0]];
+    let singleAlwaysSame = true;
+    for (let i = 0; i < 10; i++) {{
+      if (P.pickRandomArticle(single) !== single[0]) singleAlwaysSame = false;
+    }}
+    console.log("random_pick_single_element", singleAlwaysSame);
+
+    // 3. 空数组返回null，不抛异常
+    console.log("random_pick_empty_array", P.pickRandomArticle([]) === null);
+
+    // 4. 多次调用出现过不止一种结果（确认真的在随机，不是恰好卡在同一篇）
+    const seen = new Set();
+    for (let i = 0; i < 100; i++) {{
+      seen.add(P.pickRandomArticle(articles).id);
+    }}
+    console.log("random_pick_varies", seen.size > 1);
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    expected_true = [
+        "random_pick_always_from_set", "random_pick_single_element",
+        "random_pick_empty_array", "random_pick_varies",
+    ]
+    for name in expected_true:
+        check(f"pages-index.js随机文章真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+    # 静态检查随机跳转本身的实现：只截取pickRandomArticle函数体和randomBtn
+    # 点击处理这两段代码，不是整个文件——整个文件本来就合法地包含一次
+    # fetch(indexUrl)去加载search-index.json，不能把那次也算进"随机跳转
+    # 是否使用了fetch"这条断言里。
+    js_text = js_path.read_text(encoding="utf-8")
+    pick_fn_match = re.search(r"function pickRandomArticle\([^)]*\)\s*\{.*?\n {2}\}", js_text, re.DOTALL)
+    click_handler_match = re.search(r"var randomBtn.*?\};", js_text, re.DOTALL)
+    check("pickRandomArticle()函数体存在且可定位", pick_fn_match is not None)
+    check("randomBtn点击处理代码存在且可定位", click_handler_match is not None)
+    if pick_fn_match and click_handler_match:
+        random_logic_code = pick_fn_match.group(0) + "\n" + click_handler_match.group(0)
+        check("随机跳转实现不使用fetch()", "fetch(" not in random_logic_code, random_logic_code)
+        check("随机跳转实现不使用XMLHttpRequest", "XMLHttpRequest" not in random_logic_code, random_logic_code)
+        check("随机跳转实际使用article.url作为跳转目标",
+              "target.url" in click_handler_match.group(0), click_handler_match.group(0))
+
+
 def test_verify_publish_passes_on_good_build():
     def _run(tmp, out):
         import publish_build
@@ -1859,6 +1932,7 @@ def main():
         test_search_index_same_data_across_hosts,
         test_pages_index_js_copied_and_no_api_calls,
         test_pages_index_js_filter_logic_via_node,
+        test_pages_index_js_random_article_logic_via_node,
         test_verify_publish_passes_on_good_build,
         test_verify_publish_catches_injected_danger_file,
         test_verify_publish_catches_wrong_hostname,

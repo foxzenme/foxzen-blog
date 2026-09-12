@@ -100,6 +100,7 @@
       search_placeholder: "搜索标题或正文...",
       tag_placeholder: "标签筛选",
       search_btn: "搜索",
+      random_article_btn: "随机文章",
       page_size_10: "每页10篇",
       page_size_20: "每页20篇",
       page_size_50: "每页50篇",
@@ -171,6 +172,7 @@
       search_placeholder: "Search title or content...",
       tag_placeholder: "Filter by tag",
       search_btn: "Search",
+      random_article_btn: "Random article",
       page_size_10: "10 per page",
       page_size_20: "20 per page",
       page_size_50: "50 per page",
@@ -333,6 +335,16 @@
     };
   }
 
+  // "随机文章"按钮用的纯函数：从已经加载好的articles数组里挑一条，不发起
+  // 任何新的fetch——跟filterArticles/paginateArticles一样不依赖DOM，可以在
+  // Node里直接require测试（见test_publish_build.py）。空数组返回null，
+  // 调用方(initPagesSearch里的按钮点击处理)必须处理这个情况，不能假设
+  // 总有文章可跳转。
+  function pickRandomArticle(articles) {
+    if (!articles || articles.length === 0) return null;
+    return articles[Math.floor(Math.random() * articles.length)];
+  }
+
   function humanDate(d) {
     return d || "";
   }
@@ -452,6 +464,14 @@
           var searchBtn = toolbar.querySelector('[data-role="search-btn"]');
           if (searchBtn) searchBtn.onclick = applyFromForm;
           if (pageSizeSelect) pageSizeSelect.onchange = applyFromForm;
+
+          // 随机文章：直接用已经fetch过的articles数组，不发起新的网络请求；
+          // window.location.href赋值是同页面跳转，不是fetch/XHR，不涉及CORS。
+          var randomBtn = toolbar.querySelector('[data-role="random-btn"]');
+          if (randomBtn) randomBtn.onclick = function () {
+            var target = pickRandomArticle(articles);
+            if (target) window.location.href = target.url;
+          };
         }
 
         render();
@@ -467,6 +487,7 @@
     buildQueryString: buildQueryString,
     filterArticles: filterArticles,
     paginateArticles: paginateArticles,
+    pickRandomArticle: pickRandomArticle,
     initPagesSearch: initPagesSearch,
     // 下面几个i18n相关导出主要供Node测试静态断言字典结构用（比如中英文key
     // 集合是否一致），实际DOM操作部分(applyPagesI18n/wireLangToggle)依赖

@@ -39,6 +39,7 @@ import zipfile
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, Response, abort, redirect
+from werkzeug.exceptions import NotFound
 
 import db
 import git_publish
@@ -279,6 +280,35 @@ def canonical_post_page(year, month, slug):
     if not index_file.exists():
         abort(404)
     return _serve_post_response(post["post_id"], index_file.read_text(encoding="utf-8"))
+
+
+@app.route("/random", methods=["GET"])
+def random_article():
+    """公开匿名的"随机文章"入口：只读db.get_random_canonical_path()、302
+    跳转，不做计数——浏览器跟随302落到canonical_post_page()后，那条路由
+    已有的_serve_post_response()会正常记一次访问，跟直接访问一篇文章完全
+    一样，这里不需要重复计数。
+
+    Cache-Control: no-store是必须的：这是本项目第一个"同一个GET URL、每次
+    必须返回不同结果"的匿名端点，如果Cloudflare边缘缓存了某一次的302结果，
+    "随机"会对后续访客失效，且这个问题不会有任何报错、不会被现有健康检查
+    发现。显式设置这个响应头，不依赖也不需要改动Cloudflare Zone本身的
+    缓存规则配置。
+    """
+    canonical = db.get_random_canonical_path()
+    if not canonical:
+        # 不直接调用abort(404)：那会在到达下面设置响应头之前就直接抛出，
+        # 导致"当前没有文章"这个结果本身被CDN缓存住——新文章发布之后，
+        # 缓存却仍然认为没有文章可跳转。这里用NotFound().get_response()
+        # 拿到和abort(404)完全相同的标准404页面（本项目没有注册任何
+        # @app.errorhandler(404)，所以两者产出的body/状态码/Content-Type
+        # 逐字节一致），但不raise，因此还能在返回前补上no-store。
+        resp = NotFound().get_response()
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    resp = redirect(f"/{canonical}.html", code=302)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # ---------------------------------------------------------------------------

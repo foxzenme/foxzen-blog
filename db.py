@@ -702,6 +702,29 @@ def get_canonical_path(post_id):
     return row["canonical_path"] if row else None
 
 
+def get_random_canonical_path():
+    """给公开的"随机文章"入口(app.py::random_article())挑一篇当前有效文章的
+    canonical_path。"当前有效"直接等价于posts表里现存的行——sync_deleted_posts()
+    对已删除文章是硬删除(delete_post_record())，不是软删除标记，这里不需要
+    额外过滤删除状态；只需要排除canonical_path为空的行(permalink格式异常、
+    fetch_blog.py解析不出年/月/slug时会发生，见canonical_path字段注释)。
+
+    用SQL端ORDER BY RANDOM() LIMIT 1而不是先读全部行再在Python里
+    random.choice()：当前文章数量小(十几篇)，DB端随机没有性能问题，且不需要
+    把不会被选中的行也读进Python。
+
+    返回None表示当前没有任何可跳转的文章(canonical_path全部为空，或posts表
+    本身是空的)，调用方必须处理这个None，不能假设总有结果。
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT canonical_path FROM posts WHERE canonical_path IS NOT NULL "
+        "ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return row["canonical_path"] if row else None
+
+
 def set_export_size(post_id, size_bytes):
     """存这篇文章导出成Base64离线版之后的字节数，fetch_blog.py每次抓取后算一次，
     不在每次页面访问/搜索时现算（现算要重新读所有图片编码一遍，没必要每次都做）。

@@ -128,6 +128,7 @@
         return "第 " + page + " / " + totalPages + " 页，共 " + total + " 篇";
       },
       refresh_target_btn: function (target) { return "刷新 " + target; },
+      cache_purge_btn: "刷新本站缓存",
     },
     en: {
       fav_blogs_heading: "🔗 My Favorite Blogs",
@@ -200,6 +201,7 @@
         return "Page " + page + " / " + totalPages + ", " + total + " posts total";
       },
       refresh_target_btn: function (target) { return "Refresh " + target; },
+      cache_purge_btn: "Refresh site cache",
     },
   };
 

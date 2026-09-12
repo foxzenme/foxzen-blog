@@ -1880,6 +1880,82 @@ def test_pages_refresh_js_describe_response_supports_language_without_breaking_e
         check(f"pages-refresh.js语言相关真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
 
 
+def test_index_html_has_purge_cache_button_on_both_hosts():
+    """公共"刷新本站缓存"按钮扩展到GitHub/CF Pages：跟四个refresh按钮放在
+    同一个工具栏里，两个host都必须有，且不能把原有四个refresh按钮挤掉。"""
+    def _run(tmp, out):
+        import publish_build
+        for host in ("github.foxzen.me", "cf.foxzen.me"):
+            out_host = tmp / f"out_{host}"
+            publish_build.build_publish(host, out_host)
+            content = (out_host / "index.html").read_text(encoding="utf-8")
+            check(f"{host}首页包含刷新本站缓存按钮: purge-cache-btn",
+                  'data-role="purge-cache-btn"' in content)
+            check(f"{host}首页刷新本站缓存按钮带i18n钩子",
+                  'data-i18n="cache_purge_btn"' in content)
+            for target in ("mirror", "backup", "github", "cf"):
+                check(f"{host}首页仍然包含刷新按钮: refresh-btn-{target}（未被新按钮挤掉）",
+                      f'data-role="refresh-btn-{target}"' in content)
+    with_fixture(_run)
+
+
+def test_pages_index_js_cache_purge_i18n_matches_mirror_backup():
+    """中英文案必须跟static/index.js里mirror/backup同名按钮完全一致，
+    不是重新造一遍词——这是需求明确要求的"同一份用户文案"。"""
+    pages_src = (Path(__file__).parent / "static_pages" / "pages-index.js").read_text(encoding="utf-8")
+    home_src = (Path(__file__).parent / "static" / "index.js").read_text(encoding="utf-8")
+    check("pages-index.js中文文案: 刷新本站缓存", 'cache_purge_btn: "刷新本站缓存"' in pages_src)
+    check("pages-index.js英文文案: Refresh site cache", 'cache_purge_btn: "Refresh site cache"' in pages_src)
+    check("跟static/index.js的中文原文完全一致", 'cache_purge_btn: "刷新本站缓存"' in home_src)
+    check("跟static/index.js的英文原文完全一致", 'cache_purge_btn: "Refresh site cache"' in home_src)
+
+
+def test_pages_refresh_js_purge_cache_fetch_call_has_no_extra_options():
+    """静态验证doPurgeCache()的fetch调用形状：URL基于REFRESH_API_BASE拼接
+    /api/purge-cache、method=POST，且花括号选项对象里只有method这一个
+    key——没有headers/body/credentials，因此这是CORS规范里的"简单请求"，
+    不会触发预检，也不会意外携带cookie或自定义header。"""
+    import re
+    src = (Path(__file__).parent / "static_pages" / "pages-refresh.js").read_text(encoding="utf-8")
+    check("doPurgeCache()请求目标是REFRESH_API_BASE+/api/purge-cache，且选项对象只有method:\"POST\"一个key",
+          re.search(r'fetch\(REFRESH_API_BASE \+ "/api/purge-cache",\s*\{\s*method:\s*"POST"\s*\}\)', src) is not None)
+    check("整个文件只有两处fetch(调用（4个refresh按钮共用一处+purge-cache一处），没有引入额外网络机制",
+          src.count("fetch(") == 2)
+    check("文件里没有XMLHttpRequest", "XMLHttpRequest" not in src)
+    check("文件里没有credentials选项（不携带cookie）", "credentials" not in src)
+
+
+def test_pages_refresh_js_describe_purge_response_via_node():
+    """真正用node执行describePurgeResponse()，验证429/409/no_changes/
+    success/failure五种真实分支，以及中英两种语言下的文案切换——跟
+    describeResponse()已有的node验证同一个约定，不满足于只做静态源码检查。"""
+    import shutil as _shutil
+    if _shutil.which("node") is None:
+        print("  [SKIP] 本机未安装node，跳过describePurgeResponse()的真实JS行为验证")
+        return
+
+    js_path = (Path(__file__).parent / "static_pages" / "pages-refresh.js").resolve()
+    js_path_js = str(js_path).replace("\\", "\\\\")
+    snippet = f"""
+    const P = require("{js_path_js}");
+    console.log("purge_cooldown", P.describePurgeResponse(429, {{cooldown_remaining_seconds: 7}}, "zh").includes("7"));
+    console.log("purge_busy_zh", P.describePurgeResponse(409, {{}}, "zh").includes("正在进行"));
+    console.log("purge_busy_en", P.describePurgeResponse(409, {{}}, "en").includes("already in progress"));
+    console.log("purge_no_changes_zh", P.describePurgeResponse(200, {{status: "no_changes"}}, "zh").includes("没有新的内容变化"));
+    console.log("purge_no_changes_en", P.describePurgeResponse(200, {{status: "no_changes"}}, "en").includes("no new content changes"));
+    console.log("purge_success_zh", P.describePurgeResponse(200, {{status: "success"}}, "zh").includes("已刷新为最新版本"));
+    console.log("purge_success_en", P.describePurgeResponse(200, {{status: "success"}}, "en").includes("refreshed to the latest version"));
+    console.log("purge_failure_zh", P.describePurgeResponse(200, {{status: "failure"}}, "zh").includes("刷新缓存失败"));
+    console.log("purge_failure_default_lang", P.describePurgeResponse(200, {{status: "failure"}}).includes("Failed to refresh"));
+    """
+    out = _run_node(snippet)
+    lines = dict(line.split(" ", 1) for line in out.strip().splitlines() if " " in line)
+    for name in ("purge_cooldown", "purge_busy_zh", "purge_busy_en", "purge_no_changes_zh",
+                 "purge_no_changes_en", "purge_success_zh", "purge_success_en",
+                 "purge_failure_zh", "purge_failure_default_lang"):
+        check(f"describePurgeResponse()真实JS行为: {name}", lines.get(name) == "true", f"got {lines.get(name)!r}")
+
+
 def test_pages_download_js_i18n_strings_key_sets_symmetric_and_no_domains():
     import re
     src = (Path(__file__).parent / "static_pages" / "pages-download.js").read_text(encoding="utf-8")
@@ -1994,6 +2070,10 @@ def main():
         test_pages_index_js_i18n_never_touches_article_title,
         test_publish_build_toolbars_carry_i18n_hooks_for_all_three,
         test_pages_refresh_js_describe_response_supports_language_without_breaking_existing_calls,
+        test_index_html_has_purge_cache_button_on_both_hosts,
+        test_pages_index_js_cache_purge_i18n_matches_mirror_backup,
+        test_pages_refresh_js_purge_cache_fetch_call_has_no_extra_options,
+        test_pages_refresh_js_describe_purge_response_via_node,
         test_pages_download_js_i18n_strings_key_sets_symmetric_and_no_domains,
     ]
     for t in tests:

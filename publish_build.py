@@ -122,6 +122,13 @@ DOWNLOAD_TOOLBAR_HTML = """<div id="pages-download-toolbar" style="margin-bottom
 # 按钮本身只是普通<button data-role="...">，实际请求逻辑（固定绝对地址、
 # 跨域请求GreenCloud）全部在pages-refresh.js里，跟SEARCH/DOWNLOAD两个
 # 工具栏"HTML只提供骨架和data-role钩子，行为由对应JS文件接管"是同一个分工。
+#
+# 同一个工具栏里额外放一个"刷新本站缓存"按钮（data-role="purge-cache-btn"，
+# 由pages-refresh.js::initPagesRefresh()里紧跟4-target循环之后的那段逻辑
+# 绑定，同样跨域POST到mirror.foxzen.me/api/purge-cache）——语义上它也是
+# "刷新"这个大类下的一种，且endpoint同样只接受GreenCloud执行、同样需要
+# pages_refresh_toolbar_label那句"请求会发送到mirror.foxzen.me"的说明，
+# 不需要为它单独建一个工具栏容器。
 REFRESH_TOOLBAR_HTML = """<style>.refresh-btn-current{font-weight:bold;outline:2px solid #1a73e8;}</style>
 <div id="pages-refresh-toolbar" style="margin-bottom:20px;padding:12px 16px;background:#f7f7f7;border-radius:8px;">
 <div style="font-size:0.9em;color:#666;margin-bottom:8px;" data-i18n="pages_refresh_toolbar_label">内容刷新（请求会发送到 mirror.foxzen.me 上的执行中心，当前站点已加粗标出）</div>
@@ -130,6 +137,7 @@ REFRESH_TOOLBAR_HTML = """<style>.refresh-btn-current{font-weight:bold;outline:2
 <button type="button" data-role="refresh-btn-backup" data-i18n-tpl="refresh_target_btn" data-target="backup">刷新 backup</button>
 <button type="button" data-role="refresh-btn-github" data-i18n-tpl="refresh_target_btn" data-target="github">刷新 github</button>
 <button type="button" data-role="refresh-btn-cf" data-i18n-tpl="refresh_target_btn" data-target="cf">刷新 cf</button>
+<button type="button" data-role="purge-cache-btn" data-i18n="cache_purge_btn">刷新本站缓存</button>
 </div>
 </div>
 """

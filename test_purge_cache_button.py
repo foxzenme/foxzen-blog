@@ -442,6 +442,97 @@ def test_cloudflare_failure_returns_safe_error():
     with_temp_app_env(_run)
 
 
+# ---------------------------------------------------------------------------
+# CORS: github.foxzen.me / cf.foxzen.me 跨域读取 /api/purge-cache 响应
+# ---------------------------------------------------------------------------
+# 这一组不测purge_cache()的业务逻辑本身(已经在上面覆盖过)，只测
+# app.py::_apply_refresh_cors()新增的/api/purge-cache分支——验证跨域
+# 扩展到GitHub/CF Pages之后，"能不能读到响应"这件事符合预期，同时
+# "会不会真的执行purge"这件事完全不受Origin影响(全局锁/cooldown继续
+# 生效，不会因为多了一个跨域入口就被绕过)。
+
+def test_cors_allows_github_origin_on_purge_cache():
+    def _run(tmp, db, app_module, fb):
+        client = app_module.app.test_client()
+        origin = "https://github.foxzen.me"
+        resp = client.post("/api/purge-cache", headers={"Origin": origin})
+        check("github.foxzen.me能读取/api/purge-cache的CORS响应头",
+              resp.headers.get("Access-Control-Allow-Origin") == origin,
+              resp.headers.get("Access-Control-Allow-Origin"))
+        check("响应带Vary: Origin（精确匹配白名单的必需搭配，不能被CDN按错误的Origin缓存）",
+              resp.headers.get("Vary") == "Origin", resp.headers.get("Vary"))
+    with_temp_app_env(_run)
+
+
+def test_cors_allows_cf_origin_on_purge_cache():
+    def _run(tmp, db, app_module, fb):
+        client = app_module.app.test_client()
+        origin = "https://cf.foxzen.me"
+        resp = client.post("/api/purge-cache", headers={"Origin": origin})
+        check("cf.foxzen.me能读取/api/purge-cache的CORS响应头",
+              resp.headers.get("Access-Control-Allow-Origin") == origin,
+              resp.headers.get("Access-Control-Allow-Origin"))
+    with_temp_app_env(_run)
+
+
+def test_cors_rejects_unrelated_origin_on_purge_cache():
+    def _run(tmp, db, app_module, fb):
+        client = app_module.app.test_client()
+        resp = client.post("/api/purge-cache", headers={"Origin": "https://evil.example"})
+        check("未授权的任意来源不会拿到/api/purge-cache的CORS响应头",
+              "Access-Control-Allow-Origin" not in resp.headers)
+
+        resp2 = client.post("/api/purge-cache")
+        check("不带Origin header时也不会出现CORS响应头（mirror/backup自己的同源按钮走这条路径）",
+              "Access-Control-Allow-Origin" not in resp2.headers)
+    with_temp_app_env(_run)
+
+
+def test_cors_never_allows_credentials_on_purge_cache():
+    def _run(tmp, db, app_module, fb):
+        client = app_module.app.test_client()
+        resp = client.post("/api/purge-cache", headers={"Origin": "https://github.foxzen.me"})
+        check("/api/purge-cache的CORS响应从不设置Access-Control-Allow-Credentials（本来就不需要携带cookie）",
+              "Access-Control-Allow-Credentials" not in resp.headers)
+    with_temp_app_env(_run)
+
+
+def test_cors_business_logic_unaffected_by_cross_origin_call():
+    """跨域调用只影响"浏览器能不能读到响应"，不改变purge_cache()自己的
+    业务判断——no_changes/success/failure的分支逻辑、MANUAL_PURGE_LOCK、
+    5分钟cooldown全部是后端全局状态，不区分调用方Origin。"""
+    def _run(tmp, db, app_module, fb):
+        _seed_post(db)
+        _seed_fetch_log(db, changed_count=0, deleted_count=0, purge_status="skipped", purge_reason="no_change")
+        client = app_module.app.test_client()
+        resp = client.post("/api/purge-cache", headers={"Origin": "https://github.foxzen.me"})
+        data = resp.get_json()
+        check("跨域调用下no-op判断依然正常工作", data["status"] == "no_changes", data)
+    with_temp_app_env(_run)
+
+
+def test_purge_cache_preflight_options_works_without_dedicated_route():
+    """需求方要求：除非测试证明现有简单POST方案无法正常工作，否则不新增
+    OPTIONS路由。这里反过来证明"不新增也没问题"——/api/purge-cache只注册了
+    methods=["POST"]，Flask本身会给它自动附加OPTIONS支持(这个项目没有在
+    任何地方设置provide_automatic_options=False关闭它)，而_apply_refresh_
+    cors()只按request.path分支、不区分method，所以这个自动生成的OPTIONS
+    响应同样会被正确地打上CORS头。真正的按钮点击(fetch(...,{method:"POST"})
+    不带自定义header/body)本来就属于CORS规范里的simple request，不会触发
+    预检，这个测试只是确认"即使某一天真的被触发也不会失败"这层双重保险。
+    """
+    def _run(tmp, db, app_module, fb):
+        client = app_module.app.test_client()
+        origin = "https://github.foxzen.me"
+        resp = client.options("/api/purge-cache", headers={"Origin": origin})
+        check("OPTIONS /api/purge-cache不报错（Flask自动附加的OPTIONS支持）",
+              resp.status_code < 400, resp.status_code)
+        check("即使是自动生成的OPTIONS响应也带正确的CORS头，无需专门注册OPTIONS路由",
+              resp.headers.get("Access-Control-Allow-Origin") == origin,
+              resp.headers.get("Access-Control-Allow-Origin"))
+    with_temp_app_env(_run)
+
+
 def main():
     tests = [
         test_get_last_completed_fetch_log_returns_none_when_empty,
@@ -459,6 +550,12 @@ def main():
         test_endpoint_does_not_trigger_git_publish,
         test_secrets_never_appear_in_response_or_internal_storage,
         test_cloudflare_failure_returns_safe_error,
+        test_cors_allows_github_origin_on_purge_cache,
+        test_cors_allows_cf_origin_on_purge_cache,
+        test_cors_rejects_unrelated_origin_on_purge_cache,
+        test_cors_never_allows_credentials_on_purge_cache,
+        test_cors_business_logic_unaffected_by_cross_origin_call,
+        test_purge_cache_preflight_options_works_without_dedicated_route,
     ]
     for t in tests:
         print(f"--- {t.__name__} ---")

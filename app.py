@@ -918,10 +918,13 @@ def purge_cache():
     fetch_blog._purge_cloudflare_cache()做一次URL purge，绝不新写一个
     Cloudflare API client，也绝不用purge_everything。
 
-    只放在mirror.foxzen.me/backup.foxzen.me自己的首页上（同源POST，见
-    static/index.js::buildCachePurgeWidget()），不给github.foxzen.me/
-    cf.foxzen.me做跨域按钮，所以不需要像/api/refresh/*那样接入
-    _apply_refresh_cors()的CORS白名单。
+    mirror.foxzen.me/backup.foxzen.me自己首页上的按钮是同源POST（见
+    static/index.js::buildCachePurgeWidget()）；github.foxzen.me/
+    cf.foxzen.me上的按钮（见static_pages/pages-refresh.js::doPurgeCache()）
+    是跨域POST，已经接入_apply_refresh_cors()的CORS白名单（复用
+    REFRESH_CORS_ALLOWED_ORIGINS，不单独定义一份）。这个函数本身的业务
+    逻辑（no-op判断/锁/cooldown/实际purge调用）完全不区分调用方Origin，
+    四个站点共用同一份后端状态，不会因为多一个跨域入口而重复purge。
     """
     pending, row = _manual_purge_pending_change()
     if not pending:
@@ -996,15 +999,18 @@ def purge_cache():
 
 @app.after_request
 def _apply_refresh_cors(response):
-    """只对/api/refresh*路径和/api/health生效，不是全局CORS。精确匹配
-    请求方自己的Origin（不是拼通配符），不允许的origin不加这个响应头——
-    浏览器会因此拒绝跨域读取响应内容，等同拒绝。绝不设置
+    """只对/api/refresh*路径、/api/purge-cache和/api/health生效，不是全局
+    CORS。精确匹配请求方自己的Origin（不是拼通配符），不允许的origin不加
+    这个响应头——浏览器会因此拒绝跨域读取响应内容，等同拒绝。绝不设置
     Access-Control-Allow-Credentials（本来也不需要携带cookie）。
 
-    两档白名单：
-    - /api/refresh/<target>（POST触发本身 + 对应OPTIONS预检）：只允许
-      mirror/backup/github/cf——这四个是唯一会在页面上放"刷新"按钮、
-      需要读取触发结果的站点，范围维持原样不扩大。
+    三档白名单：
+    - /api/refresh/<target>（POST触发本身 + 对应OPTIONS预检）和
+      /api/purge-cache（POST，见purge_cache()；github.foxzen.me/
+      cf.foxzen.me的公共"刷新本站缓存"按钮需要跨域读取这个端点的响应）：
+      只允许mirror/backup/github/cf——这四个是唯一会在页面上放"刷新"/
+      "刷新本站缓存"按钮、需要读取触发结果的站点，范围维持原样不扩大。
+      /api/purge-cache直接复用这份白名单，不单独定义一份新的Origin集合。
     - /api/refresh/<target>/status（GET查询 + OPTIONS）和/api/health
       （GET）：额外允许status.foxzen.me和foxzenme.github.io（同一份
       status页面的GreenCloud/GitHub Pages两个独立渠道）——它们只读展示
@@ -1016,6 +1022,8 @@ def _apply_refresh_cors(response):
         allowed_origins = STATUS_READ_CORS_ALLOWED_ORIGINS
     elif path.startswith("/api/refresh"):
         allowed_origins = STATUS_READ_CORS_ALLOWED_ORIGINS if path.endswith("/status") else REFRESH_CORS_ALLOWED_ORIGINS
+    elif path == "/api/purge-cache":
+        allowed_origins = REFRESH_CORS_ALLOWED_ORIGINS
     else:
         return response
 

@@ -1,16 +1,20 @@
-// GitHub Pages / Cloudflare Pages 专用的4-target公开刷新入口。
+// GitHub Pages / Cloudflare Pages 专用的4-target公开刷新入口，外加一个
+// 公共"刷新本站缓存"按钮。
 //
 // 这个文件只会出现在github.foxzen.me/cf.foxzen.me这两个纯静态站点上——
-// 它们没有自己的后端，四个按钮点击后发出的请求物理上必须都打到GreenCloud
+// 它们没有自己的后端，按钮点击后发出的请求物理上必须都打到GreenCloud
 // （唯一跑Flask的地方），所以这里跟mirror/backup的static/index.js不同，
 // 全部用固定的绝对地址REFRESH_API_BASE，不用相对路径。这是一次真正的
-// 跨域请求，服务端已经为这四个域名单独配置了CORS allowlist（只对
-// /api/refresh/*生效，见app.py的_apply_refresh_cors()），不需要也不应该
-// 在这里做任何认证/凭据相关的事——整个刷新接口本来就是匿名公开的。
+// 跨域请求，服务端已经为这四个域名单独配置了CORS allowlist（对
+// /api/refresh/*和/api/purge-cache生效，见app.py的_apply_refresh_cors()），
+// 不需要也不应该在这里做任何认证/凭据相关的事——两个接口本来就是匿名公开的。
 //
-// 四个按钮全部显示、都可点击，当前所在站点只做视觉强调（加粗/高亮），
+// 四个刷新按钮全部显示、都可点击，当前所在站点只做视觉强调（加粗/高亮），
 // 不隐藏其他三个——每个按钮永远只请求它自己对应的target，不会因为"当前
-// 站点是github"就把mirror按钮偷偷改成也发github请求。
+// 站点是github"就把mirror按钮偷偷改成也发github请求。"刷新本站缓存"按钮
+// 只有一个、不分target，行为和mirror/backup首页上的同名按钮完全一致
+// （见static/index.js::doPurgeCache()）——都是POST同一个/api/purge-cache，
+// 由后端自己判断有没有真实待处理变化，不是"强制purge"。
 
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) {
@@ -60,6 +64,17 @@
       unknown_response: function (json) { return "未知响应: " + json; },
       refreshing_text: "刷新中...",
       request_failed: function (err) { return "请求失败: " + err; },
+      // 以下5个key专属"刷新本站缓存"按钮（doPurgeCache()/describePurgeResponse()），
+      // 文案跟static/index.js里mirror/backup同名按钮的cache_purge_*系列
+      // 完全一致，故意不共用上面refreshing_text/request_failed以外的
+      // 刷新专属文案——/api/purge-cache的响应形状(no_changes/success/
+      // failure三种status + 429/409两种httpStatus)跟/api/refresh/<target>
+      // 不同，见describePurgeResponse()。
+      purge_checking: "检查中...",
+      purge_busy: "已有一次刷新正在进行，请稍后再试。",
+      purge_no_changes: "当前没有新的内容变化，无需刷新缓存。",
+      purge_success: "缓存已刷新为最新版本。",
+      purge_failure: "刷新缓存失败，请稍后再试。",
     },
     en: {
       cooldown: function (seconds) { return "Less than 5 minutes since the last refresh, please try again in " + seconds + "s"; },
@@ -74,6 +89,11 @@
       unknown_response: function (json) { return "Unknown response: " + json; },
       refreshing_text: "Refreshing...",
       request_failed: function (err) { return "Request failed: " + err; },
+      purge_checking: "Checking...",
+      purge_busy: "A refresh is already in progress, please try again shortly.",
+      purge_no_changes: "There are no new content changes right now, no need to refresh the cache.",
+      purge_success: "The cache has been refreshed to the latest version.",
+      purge_failure: "Failed to refresh the cache, please try again later.",
     },
   };
 
@@ -102,6 +122,27 @@
       return msg;
     }
     return t.unknown_response(JSON.stringify(data));
+  }
+
+  // /api/purge-cache的响应形状只有429(cooldown)/409(busy)/200+status三种
+  // (status: no_changes/success/failure，见app.py::purge_cache())，没有
+  // /api/refresh/<target>的202(pending)/run_html_url这些字段，所以用一个
+  // 独立的纯函数而不是硬塞进上面describeResponse()多加分支。
+  function describePurgeResponse(httpStatus, data, lang) {
+    var t = refreshT(lang);
+    if (httpStatus === 429) {
+      return t.cooldown(data.cooldown_remaining_seconds || "?");
+    }
+    if (httpStatus === 409) {
+      return t.purge_busy;
+    }
+    if (data.status === "no_changes") {
+      return t.purge_no_changes;
+    }
+    if (data.status === "success") {
+      return t.purge_success;
+    }
+    return t.purge_failure;
   }
 
   // DOM部分。
@@ -171,6 +212,38 @@
           });
       };
     });
+
+    // 公共"刷新本站缓存"按钮：只有一个，不分target，跟上面4个刷新按钮
+    // 共用同一个init函数（都是"找data-role元素、绑onclick、fetch
+    // REFRESH_API_BASE+路径、alert结果"这一套），不为它单独建一个
+    // initPagesPurgeCache()。找不到这个元素（比如某个页面模板暂时还没有
+    // 这个按钮）时安静跳过，不报错——跟上面btn查找失败时的处理方式一致。
+    var purgeBtn = doc.querySelector('[data-role="purge-cache-btn"]');
+    if (purgeBtn) {
+      purgeBtn.onclick = function () {
+        var lang = getFoxzenLang();
+        purgeBtn.disabled = true;
+        var originalText = purgeBtn.textContent;
+        purgeBtn.textContent = refreshT(lang).purge_checking;
+
+        fetch(REFRESH_API_BASE + "/api/purge-cache", { method: "POST" })
+          .then(function (resp) {
+            return resp.json().catch(function () { return {}; }).then(function (data) {
+              return { httpStatus: resp.status, data: data };
+            });
+          })
+          .then(function (result) {
+            alert(describePurgeResponse(result.httpStatus, result.data, lang));
+          })
+          .catch(function (e) {
+            alert(refreshT(lang).request_failed(e));
+          })
+          .finally(function () {
+            purgeBtn.disabled = false;
+            purgeBtn.textContent = originalText;
+          });
+      };
+    }
   }
 
   return {
@@ -178,6 +251,7 @@
     REFRESH_TARGETS: REFRESH_TARGETS,
     currentTargetFromHostname: currentTargetFromHostname,
     describeResponse: describeResponse,
+    describePurgeResponse: describePurgeResponse,
     initPagesRefresh: initPagesRefresh,
   };
 });
